@@ -16,37 +16,106 @@ class ClassifierProcessor(Processor):
 
     def __call__(self, task: Task):
         data_file_path = FileOps.get_task_file_in_temp(task)
-        cap = cv2.VideoCapture(data_file_path)
         content = task.get_prev_content()
+        image_list = self._load_frames(data_file_path)
         if content is None:
             LOGGER.warning(f'content of source {task.get_source_id()} task {task.get_task_id()} is none!')
+            result = self._empty_content(task, len(image_list))
+            self.save_scenario(result, task)
+            task.set_current_content(result)
             return task
-        content_output = []
-        try:
-            for bbox, prob, class_id, roi_id in content:
-                ret, frame = cap.read()
-                height, width, _ = frame.shape if frame is not None else (0, 0, 0)
-                if ret and frame is not None:
-                    faces = []
-                    for x_min, y_min, x_max, y_max in bbox:
-                        x_min = int(max(x_min, 0))
-                        y_min = int(max(y_min, 0))
-                        x_max = int(min(width, x_max))
-                        y_max = int(min(height, y_max))
-                        faces.append(frame[y_min:y_max, x_min:x_max])
-                    with Timer(f'Classification / {len(faces)} bboxes'):
-                        result = self.classifier(faces)
-                else:
-                    result = []
-                content_output.append([result])
-        except Exception as e:
-            pass
 
-        self.save_scenario(content_output, task)
-        task.set_current_content(content_output)
+        output_records = []
+        for bbox_record in self.output_records(content, 'bbox'):
+            frame_index = int(bbox_record.get('frame_index', 0))
+            frame = image_list[frame_index] if 0 <= frame_index < len(image_list) else None
+            source_items = bbox_record.get('items') or []
+            if frame is None:
+                output_records.append({'frame_index': frame_index, 'items': []})
+                continue
+            valid_entries = []
+            for index, source_item in enumerate(source_items):
+                crop = self._crop(frame, source_item.get('bbox', []))
+                if crop is not None:
+                    valid_entries.append((index, crop))
+            if valid_entries:
+                with Timer(f'Classification / {len(valid_entries)} bboxes'):
+                    labels = self.classifier([crop for _, crop in valid_entries])
+            else:
+                labels = []
+            labels_by_index = {
+                source_index: labels[label_index]
+                for label_index, (source_index, _) in enumerate(valid_entries)
+                if label_index < len(labels)
+            }
+            items = []
+            for index, source_item in enumerate(source_items):
+                label = labels_by_index.get(index, '')
+                items.append(self._text_item(label, source_item))
+            output_records.append({
+                'frame_index': frame_index,
+                'items': items,
+            })
+
+        profile = self.make_profile(
+            frame_count=len(image_list),
+        )
+        result = self.make_content(task.get_flow_index(), {'text': output_records}, profile)
+        self.save_scenario(result, task)
+        task.set_current_content(result)
 
         return task
 
     @property
     def flops(self):
         return self.classifier.flops
+
+    @staticmethod
+    def _load_frames(data_file_path):
+        cap = cv2.VideoCapture(data_file_path)
+        image_list = []
+        success, frame = cap.read()
+        while success:
+            image_list.append(frame)
+            success, frame = cap.read()
+        release = getattr(cap, 'release', None)
+        if callable(release):
+            release()
+        return image_list
+
+    def _empty_content(self, task, frame_count):
+        profile = self.make_profile(
+            frame_count=frame_count,
+        )
+        return self.make_content(task.get_flow_index(), {'text': []}, profile)
+
+    @staticmethod
+    def _crop(frame, bbox):
+        if frame is None or len(bbox) != 4:
+            return None
+        height, width, _ = frame.shape
+        x_min, y_min, x_max, y_max = bbox
+        x_min = int(max(x_min, 0))
+        y_min = int(max(y_min, 0))
+        x_max = int(min(width, x_max))
+        y_max = int(min(height, y_max))
+        if x_max <= x_min or y_max <= y_min:
+            return None
+        return frame[y_min:y_max, x_min:x_max]
+
+    @staticmethod
+    def _text_item(label, source_item):
+        if isinstance(label, dict):
+            text = label.get('text') or label.get('label') or label.get('class') or ''
+            score = label.get('score', label.get('confidence', None))
+        else:
+            text = label
+            score = None
+        item = {
+            'text': str(text),
+            'source_object_id': source_item.get('object_id'),
+            'bbox': source_item.get('bbox', []),
+        }
+        if score is not None:
+            item['score'] = float(score)
+        return item

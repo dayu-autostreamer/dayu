@@ -1,0 +1,214 @@
+import os
+
+class VehicleAttributeRecognition:
+    service_name = 'vehicle-attribute-recognition'
+
+    def __init__(self, weights='', device=0):
+        self.weights = weights
+        self.device = device
+        self.model = self._load_model(self.weights)
+        self.flops = 0
+
+    def _load_model(self, weight_path):
+        if not weight_path:
+            return None
+        model = {
+            'weight_path': weight_path,
+            'exists': os.path.exists(weight_path),
+            'loaded': False,
+            'backend': 'rule-attribute',
+            'error': '',
+        }
+        if not model['exists']:
+            return model
+        try:
+            import torch
+            from torch import nn
+            from torchvision import models
+
+            checkpoint = self._torch_load(torch, weight_path)
+            classes = checkpoint.get('classes') or checkpoint.get('attribute_heads', {}).get('vehicle_type') or []
+            network = models.efficientnet_b0(weights=None)
+            in_features = network.classifier[1].in_features
+            network.classifier[1] = nn.Linear(in_features, len(classes))
+            network.load_state_dict(checkpoint['model_state'])
+            device = self._torch_device(torch)
+            network.to(device)
+            network.eval()
+            model.update({
+                'loaded': True,
+                'backend': 'efficientnet-b0',
+                'model': network,
+                'torch': torch,
+                'device': device,
+                'classes': list(classes),
+            })
+        except Exception as exc:  # pragma: no cover - depends on optional runtime packages.
+            model['error'] = str(exc)
+        return model
+
+    def __call__(self, payload):
+        detections = self._all_items(payload.get('inputs'), 'bbox')
+        vehicles = self._filter_detections(detections, {'car', 'bus', 'truck', 'motorcycle'})
+        attributes = []
+
+        seen_objects = []
+        for detection in vehicles:
+            object_id = detection.get('object_id')
+            if object_id in seen_objects:
+                continue
+            seen_objects.append(object_id)
+            index = len(attributes)
+            vehicle_type, confidence = self._infer_vehicle_type(payload, detection)
+            if not vehicle_type:
+                vehicle_type = detection.get('category', 'vehicle')
+                confidence = round(float(detection.get('score', 0.8)), 3)
+            crop = self._crop_for_detection(payload, detection)
+            attributes.append({
+                'source_object_id': object_id,
+                'bbox': detection.get('bbox', []),
+                'label': 'vehicle_attribute',
+                'attributes': {
+                    'type': vehicle_type,
+                    'color': self._estimate_color(crop, index),
+                    'orientation': self._estimate_orientation(detection, index),
+                },
+                'confidence': round(float(confidence), 4),
+                'source_label': self._label(detection) or 'vehicle',
+            })
+
+        return {'attribute': [{'frame_index': None, 'items': attributes}]}
+
+    def _infer_vehicle_type(self, payload, detection):
+        if not (self.model and self.model.get('loaded')):
+            return None, 0.0
+        crop = self._crop_for_detection(payload, detection)
+        tensor = self._preprocess_crop(crop)
+        if tensor is None:
+            return None, 0.0
+        torch = self.model['torch']
+        network = self.model['model']
+        try:
+            with torch.no_grad():
+                logits = network(tensor.to(self.model['device']))
+                probs = torch.softmax(logits, dim=1)[0]
+                score, index = torch.max(probs, dim=0)
+            classes = self.model.get('classes') or []
+            if not classes:
+                return None, 0.0
+            return classes[int(index.item())], float(score.item())
+        except Exception as exc:  # pragma: no cover - hardware/runtime dependent.
+            self.model['error'] = str(exc)
+            return None, 0.0
+
+    @staticmethod
+    def _all_items(inputs, key):
+        items = []
+        for content in (inputs or {}).values():
+            if not isinstance(content, dict):
+                continue
+            outputs = content.get('outputs')
+            if isinstance(outputs, dict) and key in outputs:
+                for record in outputs[key] or []:
+                    if isinstance(record, dict):
+                        frame_index = record.get('frame_index')
+                        for item in record.get('items') or []:
+                            item = dict(item)
+                            item.setdefault('frame_index', frame_index)
+                            items.append(item)
+        return items
+
+    @staticmethod
+    def _filter_detections(detections, categories):
+        category_set = set(categories)
+        return [detection for detection in detections if VehicleAttributeRecognition._label(detection) in category_set]
+
+    @staticmethod
+    def _label(item):
+        return item.get('label') or item.get('category') or ''
+
+    def _crop_for_detection(self, payload, detection):
+        frames = payload.get('frames') or []
+        if not frames:
+            return None
+        frame_id = int(detection.get('frame_id', detection.get('frame_index', 0)))
+        frame_id = max(0, min(frame_id, len(frames) - 1))
+        frame = frames[frame_id]
+        bbox = detection.get('bbox') or []
+        if len(bbox) != 4:
+            return None
+        height, width = frame.shape[:2]
+        x1, y1, x2, y2 = [int(round(value)) for value in bbox]
+        x1 = max(0, min(width - 1, x1))
+        x2 = max(0, min(width, x2))
+        y1 = max(0, min(height - 1, y1))
+        y2 = max(0, min(height, y2))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return frame[y1:y2, x1:x2]
+
+    def _preprocess_crop(self, crop):
+        if crop is None:
+            return None
+        try:
+            import cv2
+            import numpy as np
+
+            image = cv2.resize(crop, (224, 224), interpolation=cv2.INTER_LINEAR)
+            if image.ndim == 2:
+                image = np.stack([image, image, image], axis=-1)
+            image = image[:, :, :3][:, :, ::-1].astype('float32') / 255.0
+            mean = np.array([0.485, 0.456, 0.406], dtype='float32')
+            std = np.array([0.229, 0.224, 0.225], dtype='float32')
+            image = (image - mean) / std
+            tensor = self.model['torch'].from_numpy(image.transpose(2, 0, 1)).unsqueeze(0)
+            return tensor
+        except Exception as exc:  # pragma: no cover - depends on optional runtime packages.
+            if self.model is not None:
+                self.model['error'] = str(exc)
+            return None
+
+    @staticmethod
+    def _estimate_color(crop, index):
+        if crop is None:
+            return ['white', 'black', 'silver', 'blue'][index % 4]
+        try:
+            mean_bgr = crop.reshape(-1, crop.shape[-1]).mean(axis=0)
+            blue, green, red = [float(value) for value in mean_bgr[:3]]
+        except Exception:
+            return ['white', 'black', 'silver', 'blue'][index % 4]
+        brightness = (red + green + blue) / 3.0
+        if brightness < 55:
+            return 'black'
+        if brightness > 205:
+            return 'white'
+        if abs(red - green) < 18 and abs(green - blue) < 18:
+            return 'silver'
+        if red >= green and red >= blue:
+            return 'red'
+        if blue >= red and blue >= green:
+            return 'blue'
+        return 'green'
+
+    @staticmethod
+    def _estimate_orientation(detection, index):
+        bbox = detection.get('bbox') or [0, 0, 0, 0]
+        width = max(float(bbox[2] - bbox[0]), 1.0) if len(bbox) == 4 else 1.0
+        height = max(float(bbox[3] - bbox[1]), 1.0) if len(bbox) == 4 else 1.0
+        if width / height > 1.6:
+            return 'side'
+        return 'front-left' if index % 2 == 0 else 'rear-right'
+
+    def _torch_device(self, torch):
+        if isinstance(self.device, str):
+            return torch.device(self.device if self.device.startswith('cuda') and torch.cuda.is_available() else 'cpu')
+        if torch.cuda.is_available():
+            return torch.device(f'cuda:{int(self.device)}')
+        return torch.device('cpu')
+
+    @staticmethod
+    def _torch_load(torch, weight_path):
+        try:
+            return torch.load(weight_path, map_location='cpu', weights_only=False)
+        except TypeError:
+            return torch.load(weight_path, map_location='cpu')

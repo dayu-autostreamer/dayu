@@ -1,4 +1,9 @@
-approvers:
-- zwh2119
+# Repository-wide review routing; appointments are recorded in MAINTAINERS.md.
+# All current Maintainers are both reviewers and approvers.
+# After an approved roster change, run make sync-codeowners and validate-community.
 reviewers:
-- zwh2119
+  - zwh2119
+  - ShyEdge
+approvers:
+  - zwh2119
+  - ShyEdge

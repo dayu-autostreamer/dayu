@@ -4,8 +4,6 @@
 
 
 # use http registry
-insecure-entitlements=["114.212.87.136:5000","repo:5000"]
-
 [registry."repo:5000"]
   http = true
   insecure = true
@@ -14,4 +12,9 @@ insecure-entitlements=["114.212.87.136:5000","repo:5000"]
   http = true
   insecure = true
 
-
+# Limit concurrent BuildKit operations on memory-constrained build hosts.
+# A value of 2 is recommended for a host with about 10 GiB of memory when
+# building Dayu's amd64 and arm64 images together. Increase it cautiously on
+# larger hosts, or lower it if the kernel still reports OOM kills.
+[worker.oci]
+  max-parallelism = 2

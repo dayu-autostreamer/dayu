@@ -1,0 +1,104 @@
+- name: Traffic Detection Frame
+  type: image
+  variables: [ "Traffic Detection Frame" ]
+  hook_name: bbox_frame
+  hook_params: '{"service": "traffic-detection", "output": "bbox", "frame_index": 0, "label_fields": ["label", "score"], "color": [0, 220, 0]}'
+  save_expense: true
+  size: 1
+- name: Road Context Segmentation Frame
+  type: image
+  variables: [ "Road Context Segmentation Frame" ]
+  hook_name: segmentation_frame
+  hook_params: '{"service": "road-context-segmentation", "output": "segmentation", "frame_index": 0}'
+  save_expense: true
+  size: 1
+- name: Traffic Signal Recognition Frame
+  type: image
+  variables: [ "Traffic Signal Recognition Frame" ]
+  hook_name: bbox_frame
+  hook_params: '{"service": "traffic-signal-recognition", "output": "text", "frame_index": 0, "label_fields": ["state", "score"], "color": [0, 180, 255]}'
+  save_expense: true
+  size: 1
+- name: Vehicle Tracking Frame
+  type: image
+  variables: [ "Vehicle Tracking Frame" ]
+  hook_name: track_frame
+  hook_params: '{"service": "vehicle-tracking", "output": "track", "frame_index": 0}'
+  save_expense: true
+  size: 1
+- name: Vehicle Attribute Recognition Frame
+  type: image
+  variables: [ "Vehicle Attribute Recognition Frame" ]
+  hook_name: bbox_frame
+  hook_params: '{"service": "vehicle-attribute-recognition", "output": "attribute", "frame_index": 0, "label_template": "{attributes.type}/{attributes.color}/{attributes.orientation} {confidence}", "label_fields": ["attributes.type", "attributes.color", "attributes.orientation", "confidence"], "color": [200, 120, 40]}'
+  save_expense: true
+  size: 1
+- name: Vehicle Trajectory Prediction Frame
+  type: image
+  variables: [ "Vehicle Trajectory Prediction Frame" ]
+  hook_name: trajectory_frame
+  hook_params: '{"service": "vehicle-trajectory-prediction", "output": "trajectory", "frame_index": 0, "track_service": "vehicle-tracking"}'
+  save_expense: true
+  size: 1
+- name: Pedestrian Pose Estimation Frame
+  type: image
+  variables: [ "Pedestrian Pose Estimation Frame" ]
+  hook_name: pose_frame
+  hook_params: '{"service": "pedestrian-pose-estimation", "output": "pose", "frame_index": 0}'
+  save_expense: true
+  size: 1
+- name: Pedestrian Intent Recognition Frame
+  type: image
+  variables: [ "Pedestrian Intent Recognition Frame" ]
+  hook_name: text_frame
+  hook_params: '{"service": "pedestrian-intent-recognition", "output": "text", "frame_index": 0, "label_fields": ["intent", "confidence"], "anchor_service": "pedestrian-pose-estimation", "anchor_output": "pose", "anchor_key": "person_id"}'
+  save_expense: true
+  size: 1
+- name: Risk Graph Generation Frame
+  type: image
+  variables: [ "Risk Graph Generation Frame" ]
+  hook_name: event_frame
+  hook_params: '{"service": "risk-graph-generation", "output": "graph", "frame_index": 0}'
+  save_expense: true
+  size: 1
+- name: DAG Service Offloading
+  type: topology
+  variables: [ "Realtime DAG Service Offloading State" ]
+  hook_name: dag_offloading
+  save_expense: true
+  size: 2
+- name: End to End Delay Curve
+  type: curve
+  x_axis: Task Index
+  y_axis: Delay
+  variables: [ "End to End Delay" ]
+  hook_name: e2e_delay
+  size: 1
+- name: DAG Service Deployment
+  type: topology
+  variables: [ "Realtime DAG Service Deployment State" ]
+  hook_name: dag_deployment
+  save_expense: true
+  size: 2
+- name: Object Number Curve
+  type: curve
+  x_axis: Task Index
+  y_axis: Number
+  variables: [ "Object Number" ]
+  hook_name: obj_num
+  size: 1
+- name: Service Task Gantt
+  type: gantt
+  x_axis: Time
+  y_axis: Service
+  variables: [ "Service Task Timeline" ]
+  hook_name: service_gantt
+  size: 3
+- name: Traffic Detection Device Task Gantt
+  type: gantt
+  x_axis: Time
+  y_axis: Device
+  variables: [ "Service Device Task Timeline" ]
+  hook_name: service_device_gantt
+  hook_params: '{"service": "traffic-detection"}'
+  size: 3

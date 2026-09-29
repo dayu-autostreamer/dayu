@@ -11,6 +11,7 @@ detector_module = importlib.import_module("core.processor.detector_processor")
 detector_tracker_module = importlib.import_module("core.processor.detector_tracker_processor")
 classifier_module = importlib.import_module("core.processor.classifier_processor")
 roi_classifier_module = importlib.import_module("core.processor.roi_classifier_processor")
+structured_module = importlib.import_module("core.processor.structured_processor")
 
 
 def build_task(service_names, flow_index, file_path="payload.bin"):
@@ -42,6 +43,21 @@ class DummyTimer:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         return False
+
+
+def content_profile(frame_count=1):
+    return {
+        "frame_count": frame_count,
+    }
+
+
+def count_output_items(result):
+    return sum(
+        len(record.get("items") or [])
+        for records in (result.get("outputs") or {}).values()
+        for record in records
+        if isinstance(record, dict)
+    )
 
 
 class FakeVideoCapture:
@@ -78,7 +94,7 @@ def patch_processor_scenarios(monkeypatch):
 
     def fake_get_algorithm(algorithm, al_name=None, **kwargs):
         if algorithm == "PRO_SCENARIO":
-            return lambda result, task: len(result)
+            return lambda result, task: count_output_items(result)
         raise AssertionError(f"Unexpected algorithm request: {algorithm}")
 
     monkeypatch.setattr(processor_base_module.Context, "get_parameter", staticmethod(fake_get_parameter))
@@ -94,13 +110,109 @@ def test_processor_base_initializes_extractors_saves_scenarios_and_enforces_abst
     processor = processor_base_module.Processor()
     task = build_task(["detector"], "detector")
 
-    processor.save_scenario([{"bbox": [0, 0, 1, 1]}], task)
+    processor.save_scenario(
+        {
+            "service": "detector",
+            "outputs": {"bbox": [{"frame_index": 0, "items": [{"bbox": [0, 0, 1, 1]}]}]},
+            "profile": content_profile(),
+        },
+        task,
+    )
 
     assert task.get_scenario_data("detector") == {"objects": 1}
     with pytest.raises(NotImplementedError):
         processor(task)
     with pytest.raises(NotImplementedError):
         _ = processor.flops
+
+
+@pytest.mark.unit
+def test_processor_content_helpers_enforce_the_runtime_envelope_contract():
+    profile = processor_base_module.Processor.make_profile("3")
+    outputs = {
+        "bbox": [
+            {
+                "frame_index": 0,
+                "items": [{"bbox": [0, 1, 2, 3], "score": 0.7}],
+            }
+        ],
+        "text": [{"frame_index": 1, "items": []}],
+    }
+
+    content = processor_base_module.Processor.make_content("detector", outputs, profile)
+
+    assert profile == {"frame_count": 3}
+    assert content == {"service": "detector", "outputs": outputs, "profile": profile}
+    assert processor_base_module.Processor.output_records(content, "bbox") == outputs["bbox"]
+    assert processor_base_module.Processor.output_records(content, "missing") == []
+    assert processor_base_module.Processor.output_items(content, "bbox") == [{"bbox": [0, 1, 2, 3], "score": 0.7}]
+
+    with pytest.raises(ValueError, match="must be a list of records"):
+        processor_base_module.Processor.output_records(
+            {"service": "detector", "outputs": {"bbox": "bad"}, "profile": content_profile()},
+            "bbox",
+        )
+
+    records, total = processor_base_module.Processor.detection_to_bbox_records(
+        [
+            [],
+            [
+                np.array([[0.4, 1.6, 2.2, 3.8], [10, 11, 12, 13]]),
+                np.array([0.75]),
+                np.array(["car"]),
+                np.array(["object-9"]),
+            ],
+        ]
+    )
+
+    assert total == 2
+    assert records == [
+        {"frame_index": 0, "items": []},
+        {
+            "frame_index": 1,
+            "items": [
+                {"bbox": [0, 2, 2, 4], "score": 0.75, "label": "car", "object_id": "object-9"},
+                {"bbox": [10, 11, 12, 13], "score": 0.0, "label": "", "object_id": 1},
+            ],
+        },
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("content", "match"),
+    [
+        (None, "must be a dictionary"),
+        ({"outputs": {}, "profile": content_profile()}, "missing required field 'service'"),
+        ({"service": "detector", "profile": content_profile()}, "missing required field 'outputs'"),
+        ({"service": "detector", "outputs": {}}, "missing required field 'profile'"),
+        ({"service": "detector", "outputs": [], "profile": content_profile()}, "outputs must be a dictionary"),
+        ({"service": "detector", "outputs": {"": []}, "profile": content_profile()}, "output labels"),
+        ({"service": "detector", "outputs": {1: []}, "profile": content_profile()}, "output labels"),
+        ({"service": "detector", "outputs": {"bbox": {}}, "profile": content_profile()}, "must be a list"),
+        ({"service": "detector", "outputs": {"bbox": ["bad"]}, "profile": content_profile()}, "records must be"),
+        (
+            {"service": "detector", "outputs": {"bbox": [{"items": []}]}, "profile": content_profile()},
+            "require 'frame_index'",
+        ),
+        (
+            {
+                "service": "detector",
+                "outputs": {"bbox": [{"frame_index": 0, "items": {}}]},
+                "profile": content_profile(),
+            },
+            "require list 'items'",
+        ),
+        ({"service": "detector", "outputs": {}, "profile": []}, "profile.*dictionary"),
+        (
+            {"service": "detector", "outputs": {}, "profile": {"frame_count": 1, "model_loaded": True}},
+            "profile fields",
+        ),
+    ],
+)
+def test_processor_content_validation_rejects_malformed_envelopes(content, match):
+    with pytest.raises(ValueError, match=match):
+        processor_base_module.Processor.validate_content(content)
 
 
 @pytest.mark.unit
@@ -134,10 +246,19 @@ def test_detector_processor_reads_frames_runs_detector_and_saves_scenario(patch_
     assert len(detector.calls) == 1
     assert len(detector.calls[0]) == 2
     assert processor.frame_size == (6, 4)
-    assert task.get_current_content() == [
-        [[[0, 0, 2, 2]], [0.9], [1], [11]],
-        [[[1, 1, 3, 3]], [0.8], [2], [12]],
+    content = task.get_current_content()
+    assert content["service"] == "detector"
+    assert content["outputs"]["bbox"] == [
+        {
+            "frame_index": 0,
+            "items": [{"bbox": [0, 0, 2, 2], "score": 0.9, "label": "1", "object_id": 11}],
+        },
+        {
+            "frame_index": 1,
+            "items": [{"bbox": [1, 1, 3, 3], "score": 0.8, "label": "2", "object_id": 12}],
+        },
     ]
+    assert content["profile"] == {"frame_count": 2}
     assert task.get_scenario_data("detector") == {"objects": 2}
     assert processor.flops == 321.0
 
@@ -208,7 +329,13 @@ def test_detector_tracker_processor_runs_detection_then_tracking_and_updates_tas
     assert len(tracker.calls) == 1
     assert len(tracker.calls[0][0]) == 1
     assert tracker.calls[0][2][3].tolist() == [7]
-    assert task.get_current_content() == [[[[1, 1, 3, 3]], [0.8], [1], [7]]]
+    content = task.get_current_content()
+    assert content["outputs"]["bbox"] == [
+        {
+            "frame_index": 0,
+            "items": [{"bbox": [1, 1, 3, 3], "score": 0.8, "label": "1", "object_id": 7}],
+        }
+    ]
     assert task.get_scenario_data("detector-tracker") == {"objects": 1}
     assert processor.flops == 222.0
 
@@ -235,14 +362,21 @@ def test_classifier_processor_uses_previous_content_and_crops_faces(patch_proces
     processor = classifier_module.ClassifierProcessor()
     task = build_task(["detector", "classifier"], "classifier")
     task.get_service("detector").set_content_data(
-        [
-            (
-                [(-1, -1, 2, 3), (4, 1, 10, 6)],
-                [0.9, 0.8],
-                [1, 1],
-                [101, 102],
-            )
-        ]
+        {
+            "service": "detector",
+            "outputs": {
+                "bbox": [
+                    {
+                        "frame_index": 0,
+                        "items": [
+                            {"bbox": [-1, -1, 2, 3], "score": 0.9, "label": "face", "object_id": 101},
+                            {"bbox": [4, 1, 10, 6], "score": 0.8, "label": "face", "object_id": 102},
+                        ],
+                    }
+                ]
+            },
+            "profile": content_profile(),
+        }
     )
 
     result_task = processor(task)
@@ -251,8 +385,16 @@ def test_classifier_processor_uses_previous_content_and_crops_faces(patch_proces
     assert len(classifier.faces) == 2
     assert classifier.faces[0].shape == (3, 2, 3)
     assert classifier.faces[1].shape == (3, 2, 3)
-    assert task.get_current_content() == [[["adult", "child"]]]
-    assert task.get_scenario_data("classifier") == {"objects": 1}
+    assert task.get_current_content()["outputs"]["text"] == [
+        {
+            "frame_index": 0,
+            "items": [
+                {"text": "adult", "source_object_id": 101, "bbox": [-1, -1, 2, 3]},
+                {"text": "child", "source_object_id": 102, "bbox": [4, 1, 10, 6]},
+            ],
+        }
+    ]
+    assert task.get_scenario_data("classifier") == {"objects": 2}
     assert processor.flops == 111.0
 
 
@@ -275,7 +417,8 @@ def test_classifier_processor_returns_task_when_previous_content_missing(patch_p
     task = build_task(["detector", "classifier"], "classifier")
 
     assert processor(task) is task
-    assert task.get_current_content() is None
+    assert task.get_current_content()["outputs"] == {"text": []}
+    assert task.get_current_content()["profile"] == {"frame_count": 0}
     assert any("is none" in message for message in warnings)
 
 
@@ -295,7 +438,7 @@ def test_roi_classifier_processor_resets_cache_uses_roi_ids_and_handles_missing_
 
         def __call__(self, rois, roi_ids):
             self.calls.append((rois, roi_ids))
-            return [{"roi_id": roi_id, "pixels": roi.shape[0] * roi.shape[1]} for roi, roi_id in zip(rois, roi_ids)]
+            return [{"label": f"roi-{roi_id}", "score": roi.shape[0] * roi.shape[1]} for roi, roi_id in zip(rois, roi_ids)]
 
     classifier = FakeRoiClassifier()
     frame = np.arange(4 * 6 * 3, dtype=np.uint8).reshape(4, 6, 3)
@@ -307,20 +450,25 @@ def test_roi_classifier_processor_resets_cache_uses_roi_ids_and_handles_missing_
     processor = roi_classifier_module.RoiClassifierProcessor()
     task = build_task(["detector", "roi-classifier"], "roi-classifier")
     task.get_service("detector").set_content_data(
-        [
-            (
-                [(-1, -1, 2, 3), (3, 1, 8, 5)],
-                [0.9, 0.8],
-                [1, 1],
-                [10, 20],
-            ),
-            (
-                [(0, 0, 1, 1)],
-                [0.7],
-                [1],
-                [30],
-            ),
-        ]
+        {
+            "service": "detector",
+            "outputs": {
+                "bbox": [
+                    {
+                        "frame_index": 0,
+                        "items": [
+                            {"bbox": [-1, -1, 2, 3], "score": 0.9, "label": "face", "object_id": 10},
+                            {"bbox": [3, 1, 8, 5], "score": 0.8, "label": "face", "object_id": 20},
+                        ],
+                    },
+                    {
+                        "frame_index": 1,
+                        "items": [{"bbox": [0, 0, 1, 1], "score": 0.7, "label": "face", "object_id": 30}],
+                    },
+                ]
+            },
+            "profile": content_profile(),
+        }
     )
 
     result_task = processor(task)
@@ -329,9 +477,107 @@ def test_roi_classifier_processor_resets_cache_uses_roi_ids_and_handles_missing_
     assert classifier.reset_count == 1
     assert len(classifier.calls) == 1
     assert classifier.calls[0][1] == [10, 20]
-    assert task.get_current_content() == [
-        [[{"roi_id": 10, "pixels": 6}, {"roi_id": 20, "pixels": 9}]],
-        [[]],
+    assert task.get_current_content()["outputs"]["text"] == [
+        {
+            "frame_index": 0,
+            "items": [
+                {"text": "roi-10", "source_object_id": 10, "bbox": [-1, -1, 2, 3], "score": 6.0},
+                {"text": "roi-20", "source_object_id": 20, "bbox": [3, 1, 8, 5], "score": 9.0},
+            ],
+        },
+        {"frame_index": 1, "items": []},
     ]
     assert task.get_scenario_data("roi-classifier") == {"objects": 2}
     assert processor.flops == 222.0
+
+
+@pytest.mark.unit
+def test_structured_processor_collects_dag_predecessor_inputs_and_saves_profile(monkeypatch):
+    class FakeStructuredProcessor:
+        flops = 333.0
+
+        def __init__(self):
+            self.payload = None
+
+        def __call__(self, payload):
+            self.payload = payload
+            return {
+                "graph": [{"frame_index": None, "items": [{"type": "near_miss"}]}],
+            }
+
+    structured_processor = FakeStructuredProcessor()
+    frames = [np.ones((4, 6, 3), dtype=np.uint8)]
+
+    def fake_get_parameter(name, default=None, direct=True):
+        if name == "SCENARIOS_EXTRACTORS":
+            return ["structured_profile"]
+        return default
+
+    def fake_get_algorithm(algorithm, al_name=None, **kwargs):
+        if algorithm == "PRO_SCENARIO":
+            return lambda result, task: result.get("profile", {})
+        raise AssertionError(f"Unexpected algorithm request: {algorithm}")
+
+    monkeypatch.setattr(structured_module.Context, "get_parameter", staticmethod(fake_get_parameter))
+    monkeypatch.setattr(structured_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
+    def fake_get_instance(name):
+        assert name == "Structured_Processor"
+        return structured_processor
+
+    monkeypatch.setattr(structured_module.Context, "get_instance", staticmethod(fake_get_instance))
+    monkeypatch.setattr(structured_module.FileOps, "get_task_file_in_temp", staticmethod(lambda task: "payload.bin"))
+    monkeypatch.setattr(structured_module.cv2, "VideoCapture", lambda path: FakeVideoCapture(frames))
+    monkeypatch.setattr(structured_module, "Timer", DummyTimer)
+
+    dag = Task.extract_dag_from_dict(
+        {
+            "detector": {
+                "service": {"service_name": "detector", "execute_device": "edge-node"},
+                "next_nodes": ["structured"],
+            },
+            "road": {
+                "service": {"service_name": "road", "execute_device": "edge-node"},
+                "next_nodes": ["structured"],
+            },
+            "structured": {
+                "service": {"service_name": "structured", "execute_device": "edge-node"},
+                "prev_nodes": ["detector", "road"],
+            },
+        }
+    )
+    task = Task(
+        source_id=1,
+        task_id=2,
+        source_device="edge-node",
+        all_edge_devices=["edge-node"],
+        dag=dag,
+        flow_index="structured",
+        metadata={"buffer_size": 1},
+        raw_metadata={"buffer_size": 1},
+        hash_data=["frame-1"],
+        file_path="payload.bin",
+    )
+    detector_content = {
+        "service": "detector",
+        "outputs": {"bbox": [{"frame_index": 0, "items": [1]}]},
+        "profile": content_profile(),
+    }
+    road_content = {
+        "service": "road",
+        "outputs": {"segmentation": [{"frame_index": 0, "items": [2]}]},
+        "profile": content_profile(),
+    }
+    task.get_service("detector").set_content_data(detector_content)
+    task.get_service("road").set_content_data(road_content)
+
+    processor = structured_module.StructuredProcessor()
+    result_task = processor(task)
+
+    assert result_task is task
+    assert structured_processor.payload["inputs"]["detector"] == detector_content
+    assert structured_processor.payload["inputs"]["road"] == road_content
+    assert task.get_current_content()["outputs"]["graph"] == [{"frame_index": None, "items": [{"type": "near_miss"}]}]
+    assert task.get_scenario_data("structured") == {
+        "structured_profile": content_profile()
+    }
+    assert processor.flops == 333.0

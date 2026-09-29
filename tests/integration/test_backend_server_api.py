@@ -8,6 +8,19 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from runtime_model import RuntimeDirectory, RuntimeSlot, RuntimeUnit
+
+
+def _active_directory():
+    slot = RuntimeSlot(
+        "processor", "edge-a", "edge", logical_service="face-detection"
+    )
+    return RuntimeDirectory(
+        "install-api",
+        1,
+        (RuntimeUnit(slot, slot.runtime_name(1, "install-api"), 1, "a" * 64),),
+    )
+
 
 class FakeStreamResponse:
     def __init__(self, payload: bytes):
@@ -31,15 +44,15 @@ class FakeBackendCore:
                 "id": "face-detection",
                 "name": "face detection",
                 "description": "face detection",
-                "input": "frame",
-                "output": "bbox",
+                "input": ["frame"],
+                "output": ["bbox"],
             },
             {
                 "id": "gender-classification",
                 "name": "gender classification",
                 "description": "gender classification",
-                "input": "bbox",
-                "output": "text",
+                "input": ["bbox", "frame"],
+                "output": ["text"],
             },
         ]
         self.dags = []
@@ -57,13 +70,24 @@ class FakeBackendCore:
         self.source_open = False
         self.source_label = ""
         self.inner_datasource = True
+        self.runtime_orchestrator = type("RuntimeView", (), {
+            "active_directory": staticmethod(_active_directory),
+            "current_session": staticmethod(lambda: None),
+        })()
         self._export_payload = gzip.compress(json.dumps([{"task_id": 1}]).encode("utf-8"))
 
     def parse_base_info(self):
         return None
 
-    def check_pods_running_state(self):
-        return True
+    @staticmethod
+    def service_io_labels(service, field):
+        service_id = service.get("id") or service.get("service") or "<unknown>"
+        value = service.get(field)
+        if not isinstance(value, list):
+            return None, f"Service '{service_id}' field '{field}' must be a list of type labels"
+        if any(not isinstance(item, str) or not item for item in value):
+            return None, f"Service '{service_id}' field '{field}' must contain non-empty string labels"
+        return value, None
 
     def check_dag(self, dag):
         return True, "ok"
@@ -77,6 +101,14 @@ class FakeBackendCore:
     def get_edge_nodes(self):
         return [{"name": "edgex1"}]
 
+    def query_snapshot(self, include_queues=False):
+        return {
+            "open": self.source_open,
+            "source_label": self.source_label,
+            "generation": 0,
+            "queues": {} if include_queues else None,
+        }
+
     def get_system_parameters(self):
         return {"namespace": self.namespace}
 
@@ -86,8 +118,8 @@ class FakeBackendCore:
     def get_system_visualization_config(self):
         return [{"name": "CPU Usage"}]
 
-    def check_install_state(self):
-        return False
+    def management_lifecycle_snapshot(self):
+        return self.runtime_orchestrator.current_session(), None, False, ""
 
     def get_log_file_name(self):
         return None
@@ -108,11 +140,6 @@ class FakeBackendCore:
 def backend_client(monkeypatch):
     backend_server_module = importlib.import_module("backend_server")
     monkeypatch.setattr(backend_server_module, "BackendCore", FakeBackendCore)
-    monkeypatch.setattr(
-        backend_server_module.KubeHelper,
-        "check_pod_name",
-        staticmethod(lambda name, namespace: name == "face-detection"),
-    )
 
     backend = backend_server_module.BackendServer()
     with TestClient(backend.app) as client:
@@ -133,6 +160,19 @@ def test_policy_and_installed_service_routes_are_exposed(backend_client):
 
 
 @pytest.mark.integration
+def test_backend_does_not_grant_cross_origin_browser_access(backend_client):
+    _, client = backend_client
+
+    response = client.get(
+        "/policy",
+        headers={"Origin": "https://untrusted.example"},
+    )
+
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+
+
+@pytest.mark.integration
 def test_get_all_services_is_idempotent(backend_client):
     _, client = backend_client
 
@@ -144,6 +184,7 @@ def test_get_all_services_is_idempotent(backend_client):
     assert first_response.json() == second_response.json()
     service_map = {service["id"]: service for service in first_response.json()}
     assert service_map["face-detection"]["description"].endswith("(in:frame, out:bbox)")
+    assert service_map["gender-classification"]["description"].endswith("(in:bbox, frame, out:text)")
     assert service_map["face-detection"]["description"].count("(in:") == 1
 
 

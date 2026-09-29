@@ -2,22 +2,100 @@
 
 ---
 
+## v1.4
+
+### Breaking Changes
+
+Replace application `JointMultiEdgeService` generation and edge-side Kubernetes discovery with immutable Sedna
+`RuntimeService` resources, Scheduler-owned exact `RuntimeDirectory` routes, and revision task leases. Runtime workers
+no longer ship the Kubernetes Python client or accept legacy discovery/cache configuration.
+
+### Features
+
+- Add transactional scheduler-first installation, RuntimeDirectory proposal/CAS publication, Redis-backed restart
+  recovery, lease-aware drain, and exact-UID runtime retirement (`backend`/`scheduler`).
+- Restrict Kubernetes access to the singleton backend with namespace-local lifecycle RBAC and a per-namespace cluster
+  observer binding (`backend`).
+- Unify all deployment policies on the validated `logical service -> node list` contract; add explicit cloud-only,
+  full, and full-edge initial/redeployment policies; and let fixed policies resolve `@cloud` or apply
+  `include_cloud=false|true` without a fixed cloud hostname (`scheduler`).
+- Change the Generator hook lifecycle to filter an ingestion round, reserve its root task identity, schedule when due,
+  and only then materialize source data (`generator`/`scheduler`).
+- Add task-aware scheduling contracts with framework-reserved `TaskIdentity`, identity-attributed schedule decisions,
+  canonical plan digests, idempotent Redis-backed pending-to-active task admission records, and a common Scheduler
+  snapshot of resources, reservations, active tasks, and known task barriers (`generator`/`controller`/`scheduler`).
+- Replace queue length with an atomic structured queue-state contract covering ordered waiting identities, running
+  identity, and processing/handoff phase (`processor`/`monitor`/`scheduler`).
+- Reorganize multi-file hook implementations into algorithm-owned packages with explicit `hook.py` entry points and
+  names matching their sibling single-file Hook entries. 
+
+### Bug Fix
+
+- Fix possible failure in install/uninstall with one crash-recoverable ConfigMap CAS session and exact RuntimeService
+  ownership identities (`backend`).
+- Prevent source-selection scope from collapsing to the processor `node_set`, and reject invalid fixed source
+  configuration instead of silently changing the selected source (`backend`/`scheduler`).
+- Eliminate Kubernetes service-DNS search-path stalls by preserving stable RuntimeDirectory names while using absolute
+  `*.svc.cluster.local.` hosts only at HTTP, Redis, iperf, and support-datasource connection boundaries.
+- Remove the legacy per-source query startup delay and make result collection generation-scoped, immediately
+  cancellable, and bounded by an explicit Distributor request timeout and batch size (`backend`/`distributor`).
+- Make install lifecycle-cancellable: stop signals an in-flight RuntimeService activation/planning transaction before
+  serialized cleanup, preserves its crash-recoverable ownership session, and removes pre-publication resources without
+  waiting for an unready Scheduler or the full activation timeout (`backend`).
+- Keep uninstall ownership until Foreground RuntimeService deletion and the complete Kubernetes dependent-resource
+  barrier are empty; prolonged no-progress cleanup now remains retryable and install-fenced while exposing durable
+  diagnostics to every frontend window (`backend`/`frontend`).
+- Prevent Scheduler supervisor heartbeat timeouts and cascading Generator exits by running one direct Uvicorn process,
+  dispatching blocking Redis endpoints through FastAPI's thread pool,  and reducing each task to Generator acquire plus
+  Distributor final-renew/release (`generator`/`scheduler`).
+- Prevent silent task loss with root-lease-scoped atomic artifacts, exact per-hop ownership ACKs, Generator/Processor
+  backpressure, retry-safe parallel joins, and idempotent durable Distributor acceptance (`generator`/`processor`/
+  `distributor`).
+- Preserve Scheduler management rejection details through Backend RuntimeSession state and frontend presentation, and
+  emit bounded Scheduler 4xx diagnostics without logging complete request payloads.
+- Prevent schedule-plan corruption by isolating after-schedule hook mutations, and fix before-submit hooks
+  to operate on the task passed by the Generator instead of an undefined Generator field (`scheduler`).
+- Align built-in scheduling, deployment, redeployment, frame-processing, and compression hooks with full-DAG policy
+  materialization and revision-consistent LIVE RuntimeDirectory state; preserve pipeline partition semantics while
+  rejecting unsupported DAG shapes and inactive execution targets (`generator`/`scheduler`).
+
+### Minor Update
+
+- Add more services: traffic-detection, road-context-segmentation, traffic-signal-recognition, vehicle-tracking,
+  vehicle-attribute-recognition, vehicle-trajectory-prediction, pedestrian-pose-estimation,
+  pedestrian-intent-recognition, risk-graph-generation (`processor`).
+- Change input/output format of processors from value to list (`processor`).
+- Add import/export of dag in DAG Orchestrain frontend page (`frontend`).
+- Update dockerfile building to support concise modification of ultra parameters.
+- Unify input/output interface format of processors (`processor`).
+- Add Gantt visualization to display task result (`frontend`/`backend`).
+
+---
+
 ## v1.3
 
 ### Features
-- Add our work on deployment and offloading: Hedger, a hierarchical scheduling framework for macro-level service deployment and micro-level task offloading. It uses dual-agent with GNNs and DRLs to make accurate and feasible decisions. [(link)](template/scheduler/hedger.yaml)
-- Add our work on configuration optimization: Steady Scheduler, a configuration selection framework for steady scheduling. It uses side-effect to shrink search space and adapt to context fluctuations. [(link)](template/scheduler/steady.yaml)
+
+- Add our work on deployment and offloading: Hedger, a hierarchical scheduling framework for macro-level service
+  deployment and micro-level task offloading. It uses dual-agent with GNNs and DRLs to make accurate and feasible
+  decisions. [(link)](template/scheduler/hedger.yaml)
+- Add our work on configuration optimization: Steady Scheduler, a configuration selection framework for steady
+  scheduling. It uses side-effect to shrink search space and adapt to context
+  fluctuations. [(link)](template/scheduler/steady.yaml)
 
 ### Bug Fix
+
 - Fix iptables rule accumulation for edgemesh in incorrect dayu shutdowns with `dayu.sh` script correction.
 - Separate task temporary directory for different users (`controller`/`processor`).
 - Fix incompatibility of real cameras in rtsp video datasource (`generator`/`backend`).
 - Change defualt redeployment plan from full-deployment to raw deployment (`backend`).
 
 ### Minor Update
+
 - Update log export mode to support large logs in multi-stream scenarios (`backend`/`distributor`).
 - Change storage mode of http video datasource from video frame to video to avoid disk occupation (`datasource`).
-- Reconstruct the dataset format for datasource to support more flexible video data organization and processing (`datasource`).
+- Reconstruct the dataset format for datasource to support more flexible video data organization and processing (
+  `datasource`).
 - Change generator selection scope to optional for node set or all edge nodes (`backend`/`scheduler`).
 - Update file mount to be compatible with different deployment environments.
 - Optimize the frontend interfaces of dayu system (`frontend`/`backend`).
@@ -27,11 +105,13 @@
 ## v1.2
 
 ### Features
+
 - Add a cyclic redeployment mechanism of service processors for further flexible task processing.
-- Add new services to construct a logical topology, including pedestrian-detection, vehicle-detection, 
-exposure-identification, category-classification and license-plate-recognition.
+- Add new services to construct a logical topology, including pedestrian-detection, vehicle-detection,
+  exposure-identification, category-classification and license-plate-recognition.
 
 ### Bug Fix
+
 - Fix concurrency conflicts for starting up multiple streams in rtsp video and http video (`datasource`).
 - Fix frame index updating error in http video source (`datasource`).
 - Fix port occupation bug of rtsp video datasource after shutting down (`datasource`).
@@ -42,10 +122,13 @@ exposure-identification, category-classification and license-plate-recognition.
 - Add cache TTL of Kubernetes configurations to avoid additional expense in `PortInfo` and `KubeConfig`.
 
 ### Minor Update
-- Update more flexible visualization modules to switch different user-defined configurations in multi-stream scenarios (`frontend` / `backend`).
+
+- Update more flexible visualization modules to switch different user-defined configurations in multi-stream scenarios (
+  `frontend` / `backend`).
 - Clean up frontend code and beatify frontend pages (`frontend`).
 - Add persistent storage of installation configuration (`frontend`).
-- Add system visualization to monitor system parameters, including resource usage, scheduling cost and so on (`frontend` / `backend` / `scheduler`).
+- Add system visualization to monitor system parameters, including resource usage, scheduling cost and so on (
+  `frontend` / `backend` / `scheduler`).
 - Improving a fine-grained monitoring architecture including monitoring cpu and gpu flops (`monitor`).
 - Add 'USE_TENSORRT' option in processors to choose whether using tensorrt mode (`processor`).
 - Add model flops calculation in processors to support model flops monitoring (`processor`).
@@ -65,35 +148,48 @@ exposure-identification, category-classification and license-plate-recognition.
 ## v1.1
 
 ### Breaking Changes
-The basic structure of tasks in dayu is updated from linear pipeline to topological dag (directed acyclic graph) to support more complicated application scenarios.
+
+The basic structure of tasks in dayu is updated from pipeline to topological dag (directed acyclic graph) to
+support more complicated application scenarios.
 
 ### Features
-- A brand-new forwarding mechanism in the dayu system for tasks with dag structure, including splitting nodes with forking and merging nodes with redis.
-- A fine-grained and flexible deployment and offloading mechanism for topological logic nodes and physical nodes, which separates the process of model deployment and task offloading and allows collaboration among multi-edges and cloud.
+
+- A brand-new forwarding mechanism in the dayu system for tasks with dag structure, including splitting nodes with
+  forking and merging nodes with redis.
+- A fine-grained and flexible deployment and offloading mechanism for topological logic nodes and physical nodes, which
+  separates the process of model deployment and task offloading and allows collaboration among multi-edges and cloud.
 - A more flexible visualization module in frontend to display customized visualization views for system analysis.
-- Add our work on model evolution, adaptively switch models based on scenarios. [(link)](template/scheduler/model-switch.yaml)
-- Add our work on video encoding: CRAVE (Collaborative Region-aware Adaptive Video Encoding). It is a region-adaptive video encoding algorithm for cloud-edge collaborative object detection. [(link)](template/scheduler/crave.yaml)
+- Add our work on model evolution, adaptively switch models based on
+  scenarios. [(link)](template/scheduler/model-switch.yaml)
+- Add our work on video encoding: CRAVE (Collaborative Region-aware Adaptive Video Encoding). It is a region-adaptive
+  video encoding algorithm for cloud-edge collaborative object detection. [(link)](template/scheduler/crave.yaml)
 
 ### Bug Fix
+
 - Fix problem of write queue full in rtsp datasource server (`datasource`).
 - Fix possible task loss in the system (`controller` / `distributor`).
 - Add optional cloud/edge parameters filling in template files for flexible parameter specification in cloud-edge pods.
 
 ### Minor Update
+
 - Add cloud and edge template supplementary to support heterogeneous parameters (`backend`).
 - Beatify frontend pages (`frontend`).
 - Refactor template directory to simplify file structure.
-- Unify the base image for system components. 
-- Add service of age classification. (Current available services: car-detection, face-detection, gender-classification, age-classification)
+- Unify the base image for system components.
+- Add service of age classification. (Current available services: car-detection, face-detection, gender-classification,
+  age-classification)
 
 ---
 
 ## v1.0
 
 ### Features
+
 - Complete online processing, scheduling and displaying flow of video analytics pipelines.
 - Compatible with different operations among the whole flow with various hook functions.
 - Easy to deploy on distributed systems and scalable to heterogeneous devices based on KubeEdge.
-- Support heterogeneous hook function extensions for research of different topics (like data configuration, task offloading, video encoding, and so on) and implementation of different methods (for baseline comparison).
-- Include our latest work on video configuration and task offloading: hierarchical-EI, a two-phase hierarchical scheduling framework based on Embodied Intelligence. It helps adjust system configuration with low cost and high scenario adaption.  [(link)](template/scheduler/hei.yaml)
-
+- Support heterogeneous hook function extensions for research of different topics (like data configuration, task
+  offloading, video encoding, and so on) and implementation of different methods (for baseline comparison).
+- Include our latest work on video configuration and task offloading: hierarchical-EI, a two-phase hierarchical
+  scheduling framework based on Embodied Intelligence. It helps adjust system configuration with low cost and high
+  scenario adaption.  [(link)](template/scheduler/hei.yaml)

@@ -26,7 +26,7 @@ class ROIFrameVisualizer(ImageVisualizer, abc.ABC):
 
         try:
             image = self.get_first_frame_from_video(file_path)
-            image = self.draw_bboxes(image, content[0][0])
+            image = self.draw_bboxes(image, self.extract_bboxes(content))
 
             base64_data = EncodeOps.encode_image(image)
         except Exception as e:

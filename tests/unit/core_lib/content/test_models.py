@@ -257,11 +257,41 @@ def test_task_pipeline_conversion_stage_navigation_and_branch_merge():
 
     join_from_a = branches["a"].step_to_next_stage()[0]
     join_from_b = branches["b"].step_to_next_stage()[0]
+    assert join_from_a.get_parent_uuid() != join_from_b.get_parent_uuid()
+    assert join_from_a.get_task_uuid() == join_from_b.get_task_uuid()
     join_from_a.merge_task(join_from_b)
     assert join_from_a.get_service("b").get_content_data() == {"branch": "b"}
 
     roundtrip = Task.deserialize(join_from_a.serialize())
     assert roundtrip.to_dict() == join_from_a.to_dict()
+
+
+@pytest.mark.unit
+def test_task_preserves_root_schedule_commitment_across_forks_and_serialization():
+    task = build_branching_task()
+    task.set_schedule_decision_id("decision-1")
+    task.set_schedule_plan_digest("digest-1")
+    task.set_deployment_version(11)
+    task.set_runtime_directory_revision(7)
+    prefix = NameMaintainer.get_time_ticket_tag_prefix(task)
+    task.get_tmp_data()[f"{prefix}:total_start_time"] = 124.0
+
+    branch = task.step_to_next_stage()[0]
+    restored = Task.deserialize(branch.serialize())
+
+    assert restored.get_schedule_decision_id() == "decision-1"
+    assert restored.get_schedule_plan_digest() == "digest-1"
+    commitment = restored.get_schedule_commitment()
+    assert commitment["root_uuid"] == task.get_root_uuid()
+    assert commitment["source_device"] == task.get_source_device()
+    assert commitment["slo_started_at"] == 124.0
+    assert commitment["task_uuid"] == branch.get_task_uuid()
+    assert commitment["runtime_directory_revision"] == 7
+    assert commitment["deployment_version"] == 11
+    assert commitment["decision_id"] == "decision-1"
+    assert commitment["plan_digest"] == "digest-1"
+    commitment["metadata"]["buffer_size"] = 99
+    assert restored.get_metadata()["buffer_size"] == 2
 
 
 @pytest.mark.unit
@@ -295,6 +325,8 @@ def test_task_delay_calculation_time_tickets_and_estimator_helpers(monkeypatch):
     task.set_flow_index(TaskConstant.END.value)
 
     assert task.get_real_end_to_end_time() == pytest.approx(6.0)
+    assert task.get_slo_start_time() == pytest.approx(10.0)
+    assert task.get_slo_end_time() == pytest.approx(16.0)
     assert task.calculate_total_time() == pytest.approx(1.5)
     assert task.calculate_cloud_edge_transmit_time() == pytest.approx(0.5)
     assert "total delay:1.5000s" in task.get_delay_info()
@@ -386,6 +418,7 @@ def test_task_service_and_content_helpers_cover_stage_updates_and_time_ticket_op
     cloned = join_task.fork_task(join_task.get_flow_index())
     assert cloned.get_flow_index() == join_task.get_flow_index()
     assert cloned.get_parent_uuid() == join_task.get_task_uuid()
+    assert cloned.get_task_uuid() == join_task.fork_task(join_task.get_flow_index()).get_task_uuid()
 
 
 @pytest.mark.unit

@@ -48,7 +48,13 @@ class DummyTimingTask:
 
 @pytest.mark.unit
 def test_time_estimator_and_timer_cover_recording_erasing_and_logging(monkeypatch):
-    timestamps = iter([10.0, 10.25, 20.0, 20.5, 30.0, 31.0, 40.0, 50.0, 60.0, 70.0])
+    timestamps = iter([
+        10.0, 10.25,
+        20.0, 20.5,
+        25.0, 26.0,
+        30.0, 31.0,
+        40.0, 50.0, 60.0, 70.0,
+    ])
     logs = []
 
     monkeypatch.setattr(time_module.time, "time", lambda: next(timestamps))
@@ -64,6 +70,12 @@ def test_time_estimator_and_timer_cover_recording_erasing_and_logging(monkeypatc
         pass
     assert plain_timer.get_elapsed_time() == 0.5
     assert logs[-1].startswith("Execution time:")
+
+    log_count = len(logs)
+    with Timer("quiet-stage", log_enabled=False) as quiet_timer:
+        pass
+    assert quiet_timer.get_elapsed_time() == 1.0
+    assert len(logs) == log_count
 
     data = {}
     duration, start_ts = TimeEstimator.record_ts(data, "task-start")
@@ -143,8 +155,9 @@ def test_accuracy_estimator_covers_frame_mapping_ground_truth_and_map_calculatio
 @pytest.mark.unit
 def test_overhead_estimator_initializes_logs_tracks_context_manager_and_parses_average(tmp_path, monkeypatch):
     class FakeTimer:
-        def __init__(self, label=""):
+        def __init__(self, label="", log_enabled=True):
             self.label = label
+            self.log_enabled = log_enabled
             self.start_time = None
             self.end_time = None
 
@@ -185,6 +198,18 @@ def test_overhead_estimator_initializes_logs_tracks_context_manager_and_parses_a
     assert cleared_lines[-1] == "agent_id,timestamp,start_time,end_time,duration_seconds"
     assert estimator._format_dt(overhead_module.datetime(2024, 1, 1, 12, 0, 0)) == "2024-01-01 12:00:00.000000"
 
+    quiet = OverheadEstimator(
+        "quiet",
+        "metrics",
+        agent_id=8,
+        write_file=False,
+        log_each=False,
+    )
+    with quiet:
+        pass
+    assert quiet.get_latest_overhead() == 0.5
+    assert not (tmp_path / "metrics" / "quiet_Overhead.txt").exists()
+
 
 @pytest.mark.unit
 def test_flops_estimator_prefers_model_info_and_falls_back_to_ptflops(monkeypatch):
@@ -220,8 +245,9 @@ def test_flops_estimator_prefers_model_info_and_falls_back_to_ptflops(monkeypatc
 @pytest.mark.unit
 def test_overhead_estimator_handles_missing_logs_empty_files_and_lock_fallback(monkeypatch, tmp_path):
     class FakeTimer:
-        def __init__(self, label=""):
+        def __init__(self, label="", log_enabled=True):
             self.label = label
+            self.log_enabled = log_enabled
             self.start_time = None
             self.end_time = None
 

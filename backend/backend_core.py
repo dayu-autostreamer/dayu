@@ -5,19 +5,24 @@ import shutil
 import tempfile
 import threading
 import re
+import uuid
 from collections import deque
-from func_timeout import func_set_timeout as timeout
-import func_timeout.exceptions as timeout_exceptions
+from dataclasses import dataclass
 
 import os
 import time
 from core.lib.content import Task
-from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, SystemConstant, TaskConstant, \
+from core.lib.common import LOGGER, Context, YamlOps, FileOps, Counter, Queue, TaskConstant, \
     ConfigBoundInstanceCache
-from core.lib.network import http_request, NodeInfo, PortInfo, merge_address, NetworkAPIPath, NetworkAPIMethod
+from core.lib.network import connection_host, http_request, NetworkAPIPath, NetworkAPIMethod
 from core.lib.estimation import Timer
 
-from kube_helper import KubeHelper
+from runtime_orchestrator import (
+    RuntimeOperationCancelled,
+    RuntimeOrchestrator,
+    RuntimeRetirementPending,
+)
+from runtime_telemetry import RuntimeTelemetryCache
 from template_helper import TemplateHelper
 
 
@@ -25,7 +30,33 @@ def _indent_json_block(text, prefix='    '):
     return '\n'.join(f'{prefix}{line}' if line else prefix for line in text.splitlines())
 
 
+@dataclass
+class _InstallAdmission:
+    install_id: str
+    cancel_event: threading.Event
+    done_event: threading.Event
+    phase: str = 'preparing-install'
+    operation_id: str = ''
+
+    def cancel(self):
+        if self.phase != 'cancelling-install':
+            self.phase = 'cancelling-install'
+            self.operation_id = str(uuid.uuid4())
+        self.cancel_event.set()
+
+
+@dataclass
+class _StopAdmission:
+    install_id: str
+    done_event: threading.Event
+    operation_id: str
+    result: object = None
+
+
 class BackendCore:
+    _RESULT_REQUEST_TIMEOUT_SECONDS = 5.0
+    _RESULT_WINDOW_SIZE = 20
+
     def __init__(self):
 
         self.template_helper = TemplateHelper(Context.get_default_file_path())
@@ -68,23 +99,57 @@ class BackendCore:
         self.resource_url = None
         self.log_fetch_url = None
 
+        self.runtime_telemetry = RuntimeTelemetryCache(
+            request=lambda *args, **kwargs: http_request(*args, **kwargs),
+            runtime_metrics=lambda refs, request_timeout_seconds: (
+                self.runtime_orchestrator.sample_runtime_metrics(
+                    refs,
+                    request_timeout_seconds=request_timeout_seconds,
+                )
+            ),
+        )
+
         self.inner_datasource = self.check_simulation_datasource()
         self.source_open = False
         self.source_label = ''
-
+        self.query_lock = threading.Lock()
+        self._query_generation = 0
+        self._query_cancel_event = None
+        self._result_thread = None
+        # Query admission follows the committed runtime lifecycle.  It is
+        # enabled only after install/recovery publishes an active directory
+        # and is disabled atomically with query cancellation before uninstall.
+        self._query_admission_enabled = False
         self.task_results = {}
 
         self.is_get_result = False
-        self.is_cycle_deploy = False
-
-        self.yaml_dict = None
-        self.source_deploy = None
-
-        self.installed_running_state = False
-        self.install_state = False
-
-        self.cur_yaml_docs = None
-        self.save_yaml_path = 'resources.yaml'
+        # Lifecycle cancellation is coordinated independently from the
+        # RuntimeOrchestrator transaction lock.  An uninstall request registers
+        # here first and can therefore signal an install that is blocked in a
+        # RuntimeService watch before waiting for the serialized cleanup
+        # transaction. A single-flight stop admission also closes the
+        # stop-before-token race: no install can register before durable stop
+        # acceptance, and concurrent callers observe the same result.
+        self._lifecycle_control_lock = threading.Lock()
+        self._closed = False
+        self._install_admission = None
+        self._stop_admission = None
+        self._bound_runtime_key = None
+        self._local_runtime_error_key = None
+        self._local_runtime_error = ''
+        self._runtime_reconcile_lock = threading.Lock()
+        self._runtime_reconcile_stop_event = None
+        self._runtime_reconcile_thread = None
+        self._runtime_recovery_stop_event = threading.Event()
+        self._runtime_recovery_wake_event = threading.Event()
+        self._runtime_recovery_requested = False
+        self._runtime_recovery_thread = None
+        self.runtime_orchestrator = RuntimeOrchestrator(
+            self.template_helper,
+            self.namespace,
+        )
+        redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=20, direct=False)
+        self.processor_redeployment_interval_s = max(0.0, float(redeploy_interval))
         self.system_log_store_path = 'system_log_store.jsonl'
         self.system_log_lock = threading.Lock()
         self.system_log_retention_records = max(
@@ -97,16 +162,7 @@ class BackendCore:
         )
         self.system_log_record_count = self._count_jsonl_records(self.system_log_store_path)
 
-        # Lock for uninstall operations to prevent inconsistent states
-        self.uninstall_lock = False
-        redeploy_interval = Context.get_parameter('REDEPLOYMENT_REQUEST_INTERVAL', default=20, direct=False)
-        self.processor_redeployment_interval_s = max(0.0, float(redeploy_interval))
-        self._last_processor_redeploy_applied = False
-
         self.default_visualization_image = 'default_visualization.png'
-
-        self.system_support_components = ['backend', 'frontend', 'datasource', 'redis']
-        self.function_components = ['generator', 'scheduler', 'controller', 'distributor', 'monitor']
 
     def parse_base_info(self):
         try:
@@ -120,6 +176,217 @@ class BackendCore:
         except KeyError as e:
             LOGGER.warning(f'Parse base info failed: {str(e)}')
 
+    @staticmethod
+    def _runtime_key(directory):
+        if directory is None:
+            return None
+        return str(directory.install_id), int(directory.revision)
+
+    def _activate_local_runtime(self, directory, start_reconcile=False):
+        """Publish one directory to Backend-local readers after durable commit."""
+        if self._closed:
+            raise RuntimeError('backend lifecycle is closed')
+        runtime_key = self._runtime_key(directory)
+        reconcile_started = False
+        try:
+            self._bind_runtime_urls(directory)
+            self.runtime_telemetry.start()
+            if start_reconcile:
+                self._start_runtime_reconcile_loop(directory.install_id)
+                reconcile_started = True
+            # Publish the generation before opening query admission. Production
+            # callers hold lifecycle control across this method, so management
+            # readers cannot observe the intermediate value; query callers only
+            # become admissible after every local projection field is complete.
+            self._bound_runtime_key = runtime_key
+            self._local_runtime_error_key = None
+            self._local_runtime_error = ''
+            with self.query_lock:
+                self._query_admission_enabled = True
+        except Exception as exc:
+            self._bound_runtime_key = None
+            self._local_runtime_error_key = runtime_key
+            self._local_runtime_error = f'local runtime activation failed: {exc}'
+            try:
+                if reconcile_started:
+                    self._stop_runtime_reconcile_loop()
+            except Exception:
+                LOGGER.exception('failed to stop reconcile after local activation error')
+            try:
+                with self.query_lock:
+                    self._query_admission_enabled = False
+                    self._close_query_locked()
+            except Exception:
+                LOGGER.exception('failed to close query after local activation error')
+            try:
+                self.runtime_telemetry.unbind()
+            except Exception:
+                LOGGER.exception('failed to unbind telemetry after local activation error')
+            self.resource_url = None
+            self.result_url = None
+            self.result_file_url = None
+            self.log_fetch_url = None
+            raise
+
+    def _ensure_local_runtime_projection(self, session, cancel_event=None):
+        """Repair a missing local projection from the in-memory directory."""
+        if session is None or session.phase != 'active':
+            return False
+        session_key = (
+            session.install_id,
+            int(session.active_directory_revision),
+        )
+        if self._bound_runtime_key == session_key:
+            return False
+        with self._lifecycle_control_lock:
+            if (
+                    self._stop_admission is not None
+                    or (cancel_event is not None and cancel_event.is_set())):
+                return False
+            if self._bound_runtime_key == session_key:
+                return False
+            directory = self.runtime_orchestrator.active_directory()
+            if self._runtime_key(directory) != session_key:
+                raise RuntimeError(
+                    'active RuntimeDirectory does not match the durable session generation'
+                )
+            # active_directory() is a process snapshot lookup. Retrying this
+            # projection performs no Kubernetes discovery or list call.
+            self._activate_local_runtime(directory)
+            return True
+
+    def _recover_runtime_session(self, stop_event=None):
+        """Perform one recovery attempt; return whether it reached a stable state."""
+        try:
+            session = self.runtime_orchestrator.recover()
+            if stop_event is not None and stop_event.is_set():
+                return True
+            if session is None:
+                return True
+            if session.phase in {'uninstalling', 'finalizing-uninstall'}:
+                # A durable uninstall intent must resume before this process
+                # can re-open query admission. The same lifecycle worker
+                # repeats each exact-UID boundary idempotently without blocking
+                # backend startup or management reads.
+                with self._lifecycle_control_lock:
+                    if stop_event is not None and stop_event.is_set():
+                        return True
+                    self._start_runtime_reconcile_loop(session.install_id)
+                return True
+            if session.phase != 'active':
+                LOGGER.warning(
+                    f'[Runtime Recovery] Session {session.install_id} requires operator cleanup: '
+                    f'phase={session.phase}, error={session.last_error}'
+                )
+                return True
+            directory = self.runtime_orchestrator.active_directory()
+            if directory is None:
+                raise RuntimeError('recovered active session has no RuntimeDirectory')
+            with self._lifecycle_control_lock:
+                if stop_event is not None and stop_event.is_set():
+                    return True
+                stop = self._stop_admission
+                if stop is not None and stop.install_id in {'', session.install_id}:
+                    return True
+                current = self.runtime_orchestrator.current_session()
+                if (
+                        current is None
+                        or current.install_id != session.install_id
+                        or current.phase != 'active'):
+                    return False
+                self._activate_local_runtime(directory, start_reconcile=True)
+            return True
+        except Exception as exc:
+            # Keep the management API available for inspection/uninstall even
+            # when an external dependency is unavailable during process start.
+            try:
+                current = self.runtime_orchestrator.current_session()
+            except Exception:
+                current = None
+            if current is not None and current.phase == 'active':
+                runtime_key = (
+                    current.install_id,
+                    int(current.active_directory_revision),
+                )
+                with self._lifecycle_control_lock:
+                    self._bound_runtime_key = None
+                    if self._local_runtime_error_key != runtime_key:
+                        self._local_runtime_error_key = runtime_key
+                        self._local_runtime_error = (
+                            f'local runtime recovery failed: {exc}'
+                        )
+            LOGGER.warning(f'[Runtime Recovery] Managed runtime recovery failed: {exc}')
+            LOGGER.exception(exc)
+            return False
+
+    def _start_runtime_recovery_async(self):
+        with self._lifecycle_control_lock:
+            if self._closed:
+                return
+            if self._runtime_recovery_thread is not None:
+                # Do not lose a trigger against a worker that has just reached
+                # a stable snapshot but has not yet cleared its ownership.
+                self._runtime_recovery_requested = True
+                self._runtime_recovery_wake_event.set()
+                return
+            self._runtime_recovery_stop_event.clear()
+            self._runtime_recovery_wake_event.clear()
+            self._runtime_recovery_requested = False
+            thread = threading.Thread(
+                target=self.run_runtime_recovery,
+                args=(self._runtime_recovery_stop_event,),
+                name='dayu-runtime-recovery',
+                daemon=True,
+            )
+            self._runtime_recovery_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                self._runtime_recovery_thread = None
+                self._runtime_recovery_stop_event.set()
+                raise
+
+    def start(self):
+        """Start lifecycle workers under the owning application's lifespan."""
+        with self._lifecycle_control_lock:
+            self._closed = False
+        if os.getenv('DAYU_RUNTIME_CONTROL_PLANE', '').lower() == 'true':
+            self._start_runtime_recovery_async()
+
+    def run_runtime_recovery(self, stop_event):
+        retry_delay = 1.0
+        try:
+            while not stop_event.is_set():
+                if self._recover_runtime_session(stop_event=stop_event):
+                    with self._lifecycle_control_lock:
+                        if stop_event.is_set():
+                            if self._runtime_recovery_thread is threading.current_thread():
+                                self._runtime_recovery_thread = None
+                            self._runtime_recovery_requested = False
+                            return
+                        if self._runtime_recovery_requested:
+                            self._runtime_recovery_requested = False
+                            self._runtime_recovery_wake_event.clear()
+                            retry_delay = 1.0
+                            continue
+                        if self._runtime_recovery_thread is threading.current_thread():
+                            self._runtime_recovery_thread = None
+                        return
+                woke = self._runtime_recovery_wake_event.wait(retry_delay)
+                self._runtime_recovery_wake_event.clear()
+                if stop_event.is_set():
+                    return
+                if woke:
+                    with self._lifecycle_control_lock:
+                        self._runtime_recovery_requested = False
+                    retry_delay = 1.0
+                else:
+                    retry_delay = min(retry_delay * 2.0, 30.0)
+        finally:
+            with self._lifecycle_control_lock:
+                if self._runtime_recovery_thread is threading.current_thread():
+                    self._runtime_recovery_thread = None
+
     def get_log_file_name(self):
         base_info = self.template_helper.load_base_info()
         load_file_name = base_info['log-file-name']
@@ -127,439 +394,329 @@ class BackendCore:
             return None
         return load_file_name.split('.')[0]
 
-    def parse_and_apply_templates(self, policy, source_deploy):
-        yaml_dict = {}
-
-        yaml_dict.update(self.template_helper.load_policy_apply_yaml(policy))
-
-        service_dict = self.extract_service_from_source_deployment(source_deploy)
-        yaml_dict.update({'processor': self.template_helper.load_application_apply_yaml(service_dict)})
-
-        self.yaml_dict = yaml_dict
-
-        first_stage_components = ['scheduler', 'distributor', 'monitor']
-        second_stage_components = ['controller', 'generator', 'processor']
-
-        LOGGER.info(f'[First Deployment Stage] deploy components:{first_stage_components}')
-        first_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
-                                                                        copy.deepcopy(source_deploy),
-                                                                        scopes=first_stage_components)
+    def parse_and_apply_templates(
+            self, policy, source_deploy, source_label='', install_id=''):
+        """Install one transactional managed-runtime session."""
+        install_id = str(install_id or '').strip()
         try:
-            result, msg = self.install_yaml_templates(first_docs_list)
-        except timeout_exceptions.FunctionTimedOut:
-            LOGGER.warning('Parse and apply templates failed: first-stage install timeout after 100 seconds')
-            result = False
-            msg = 'first-stage install timeout after 100 seconds'
-        except Exception as e:
-            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
-            LOGGER.exception(e)
-            result = False
-            msg = 'unexpected system error, please refer to logs in backend'
-        finally:
-            self.save_component_yaml(first_docs_list)
-        if not result:
-            return False, msg
-        # Wait for scheduler to be ready
-        time.sleep(3)
+            canonical_install_id = str(uuid.UUID(install_id))
+        except (ValueError, AttributeError, TypeError):
+            return False, 'install_id must be a canonical UUID'
+        if install_id != canonical_install_id:
+            return False, 'install_id must be a canonical UUID'
 
-        LOGGER.info(f'[Second Deployment Stage] deploy components:{second_stage_components}')
-        second_stage_source_deploy = copy.deepcopy(source_deploy)
-        second_docs_list = self.template_helper.finetune_yaml_parameters(copy.deepcopy(yaml_dict),
-                                                                         second_stage_source_deploy,
-                                                                         scopes=second_stage_components)
-        # Persist source_device selected during generator planning so later
-        # processor-only redeployment requests keep the scheduler context.
-        self.source_deploy = second_stage_source_deploy
-        try:
-            result, msg = self.install_yaml_templates(second_docs_list)
-        except timeout_exceptions.FunctionTimedOut:
-            LOGGER.warning('Parse and apply templates failed: second-stage install timeout after 100 seconds')
-            result = False
-            msg = 'second-stage install timeout after 100 seconds'
-        except Exception as e:
-            LOGGER.warning(f'Parse and apply templates failed: {str(e)}')
-            LOGGER.exception(e)
-            result = False
-            msg = 'unexpected system error, please refer to logs in backend'
-        finally:
-            self.save_component_yaml(first_docs_list + second_docs_list)
-
-        if not result:
-            return False, msg
-
-        self.installed_running_state = True
-
-        # Start cycle deployment
-        self.is_cycle_deploy = True
-        threading.Thread(target=self.run_cycle_deploy).start()
-
-        return True, 'Install services successfully'
-
-    def parse_and_delete_templates(self):
-        # Wait for uninstall lock release
-        while self.uninstall_lock:
-            time.sleep(0.5)
-            continue
-
-        # End cycle deployment
-        self.is_cycle_deploy = False
-
-        docs = self.read_component_yaml()
-        try:
-            result, msg = self.uninstall_yaml_templates(docs)
-        except timeout_exceptions.FunctionTimedOut:
-            msg = 'timeout after 200 seconds'
-            result = False
-            LOGGER.warning(f'Uninstall services failed: {msg}')
-        except Exception as e:
-            LOGGER.warning(f'Uninstall services failed: {str(e)}')
-            LOGGER.exception(e)
-            result = False
-            msg = 'unexpected system error, please refer to logs in backend'
-
-        return result, msg
-
-    def parse_and_redeploy_services(self, update_docs):
-        self._last_processor_redeploy_applied = False
-        original_docs = self.read_component_yaml()
-        if not original_docs:
-            msg = 'no valid components yaml docs found.'
-            LOGGER.warning(msg)
-            return False, ''
-
-        _, docs_to_add, docs_to_update, docs_to_delete = self.check_and_update_docs_list(original_docs, update_docs)
-        add_names = [doc['metadata']['name'] for doc in docs_to_add]
-        update_names = [doc['metadata']['name'] for doc in docs_to_update]
-        delete_names = [doc['metadata']['name'] for doc in docs_to_delete]
-        change_count = len(add_names) + len(update_names) + len(delete_names)
-        LOGGER.debug(
-            f"[Redeployment] processor change set: add={add_names}, "
-            f"update={update_names}, delete={delete_names}"
-        )
-
-        if change_count == 0:
-            LOGGER.debug('[Redeployment] No processor changes detected, skip redeployment.')
-            return True, ''
-
-        try:
-            res, msg = self.operate_processors(docs_to_update, docs_to_add, docs_to_delete)
-        except timeout_exceptions.FunctionTimedOut as e:
-            msg = (
-                "processor redeployment timeout; "
-                f"add={add_names}, update={update_names}, delete={delete_names}"
+        cancel_event = threading.Event()
+        # Complete the one-off ConfigMap snapshot load without holding process
+        # admission control. The second read below is memory-only, so a slow API
+        # server cannot freeze stop registration or lifecycle status sampling.
+        self.runtime_orchestrator.current_session()
+        with self._lifecycle_control_lock:
+            if self._closed:
+                return False, 'Backend lifecycle is closed'
+            if self._stop_admission is not None:
+                return False, 'Install cancelled by lifecycle operation'
+            session = self.runtime_orchestrator.current_session()
+            if session is not None:
+                if session.phase in {'uninstalling', 'finalizing-uninstall'}:
+                    return False, 'Uninstall is in progress'
+                return False, 'A managed runtime session already exists; uninstall it before installing'
+            if self._install_admission is not None:
+                return False, 'Another install operation is already in progress'
+            admission = _InstallAdmission(
+                install_id=install_id,
+                cancel_event=cancel_event,
+                done_event=threading.Event(),
+                operation_id=str(uuid.uuid4()),
             )
-            LOGGER.warning(f"Redeploy processors failed: {msg}")
-            LOGGER.exception(e)
-            return False, msg
-        except Exception as e:
-            LOGGER.warning(f'Redeploy processors failed: {str(e)}')
-            LOGGER.exception(e)
-            return False, 'unexpected system error, please refer to logs in backend'
+            self._install_admission = admission
+            self._local_runtime_error_key = None
+            self._local_runtime_error = ''
 
-        if not res:
-            return False, msg
-
-        self._last_processor_redeploy_applied = True
-        return True, ''
-
-    @timeout(300)
-    def operate_processors(self, docs_to_update, docs_to_add, docs_to_delete):
-        processor_update, processor_add, processor_delete = [], [], []
-        if docs_to_update:
-            res, msg, processor_update = self.update_processors(docs_to_update)
-            if not res:
-                return False, msg
-
-        if docs_to_add:
-            res, msg, processor_add = self.install_processors(docs_to_add)
-            if not res:
-                return False, msg
-
-        if docs_to_delete:
-            res, msg, processor_delete = self.uninstall_processors(docs_to_delete)
-            if not res:
-                return False, msg
-
-        processor_delete += processor_update
-        processor_add += processor_update
-        while KubeHelper.check_pods_with_string_exists(self.namespace, include_str_list=processor_delete):
-            time.sleep(1)
-
-        while not KubeHelper.check_specific_pods_running(self.namespace, processor_add):
-            time.sleep(1)
-
-        return True, ''
-
-    @timeout(200)
-    def update_processors(self, yaml_docs):
-        yaml_docs = [doc for doc in (yaml_docs or []) if doc['metadata']['name']
-                     not in (self.system_support_components + self.function_components)]
-        if not yaml_docs:
-            return True, 'no processors need to be installed.', []
-
-        processors = [doc['metadata']['name'] for doc in yaml_docs]
-        LOGGER.info(f'[Redeployment] update processors:{processors}')
-
-        _result = KubeHelper.delete_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.', []
-
-        _result = KubeHelper.apply_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.', []
-        return (_result, '', processors) if _result else (_result, 'kubernetes api error.', [])
-
-    @timeout(100)
-    def install_processors(self, yaml_docs):
-        yaml_docs = [doc for doc in (yaml_docs or []) if doc['metadata']['name']
-                     not in (self.system_support_components + self.function_components)]
-        if not yaml_docs:
-            return True, 'no processors need to be installed.', []
-
-        processors = [doc['metadata']['name'] for doc in yaml_docs]
-        LOGGER.info(f'[Redeployment] install processors: {processors}')
-        _result = KubeHelper.apply_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.', []
-        return (_result, '', processors) if _result else (_result, 'kubernetes api error.', [])
-
-    @timeout(200)
-    def uninstall_processors(self, yaml_docs):
-        yaml_docs = [doc for doc in (yaml_docs or []) if doc['metadata']['name']
-                     not in (self.system_support_components + self.function_components)]
-        if not yaml_docs:
-            return True, 'no processors need to be uninstalled.', []
-
-        processors = [doc['metadata']['name'] for doc in yaml_docs]
-        LOGGER.info(f'[Redeployment] uninstall processors: {processors}')
-        _result = KubeHelper.delete_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.', []
-        return (_result, '', processors) if _result else (_result, 'kubernetes api error.', [])
-
-    @timeout(100)
-    def install_yaml_templates(self, yaml_docs):
-        if not yaml_docs:
-            return False, 'yaml data is lost, fail to install resources'
-        _result = KubeHelper.apply_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.'
-        while not self.check_pods_running_state():
-            time.sleep(1)
-        return _result, '' if _result else 'kubernetes api error'
-
-    @timeout(200)
-    def uninstall_yaml_templates(self, yaml_docs):
-        if not yaml_docs:
-            return False, 'yaml docs is lost, fail to delete resources'
-        self.installed_running_state = False
-        _result = KubeHelper.delete_custom_resources(yaml_docs)
-        if not _result:
-            return False, 'kubernetes api error.'
-        while self.check_install_state():
-            time.sleep(1)
-        return _result, '' if _result else 'kubernetes api error'
-
-    def check_and_update_docs_list(self, original_docs, update_docs):
-        """
-        Intelligently compares and categorizes Kubernetes resource configurations
-        :param original_docs: List of existing resource configurations
-        :param update_docs: List of new resource configurations
-        :return: Tuple containing:
-            - total_docs: Complete merged configuration
-            - resources_to_add: Resources to be created
-            - resources_to_update: Resources needing updates
-            - resources_to_delete: Resources to be deleted
-        """
-        # Create name-based dictionaries for efficient lookup
-        original_dict = {doc['metadata']['name']: doc for doc in original_docs}
-        update_dict = {doc['metadata']['name']: doc for doc in update_docs}
-
-        # Initialize change sets
-        resources_to_add = []
-        resources_to_update = []
-        resources_to_delete = []
-
-        # Detect resources to delete (present in original but missing in update)
-        for name in list(original_dict.keys()):
-            if name not in (self.system_support_components + self.function_components) and name not in update_dict:
-                resources_to_delete.append(original_dict[name])
-                original_dict.pop(name)
-
-        # Detect resources to add or update
-        for name, new_doc in update_dict.items():
-            if name not in original_dict:
-                # New resource found
-                resources_to_add.append(new_doc)
-                original_dict[name] = new_doc
-            else:
-                # Compare configuration changes
-                old_doc = original_dict[name]
-                if BackendCore.has_significant_changes(old_doc, new_doc):
-                    resources_to_update.append(new_doc)
-                    original_dict[name] = new_doc
-
-        # Generate merged configuration (updated state)
-        total_docs = list(original_dict.values())
-
-        return total_docs, resources_to_add, resources_to_update, resources_to_delete
-
-    @staticmethod
-    def has_significant_changes(old_doc, new_doc):
-        """
-        Detects if resource configurations have meaningful differences
-        Ignores metadata, status, and non-critical fields
-        """
-        # Basic type checks
-        if old_doc['kind'] != new_doc['kind']:
-            LOGGER.debug(f"Kind changed from {old_doc['kind']} to {new_doc['kind']}")
-            return True
-        if old_doc['apiVersion'] != new_doc['apiVersion']:
-            LOGGER.debug(f"API version changed from {old_doc['apiVersion']} to {new_doc['apiVersion']}")
-            return True
-
-        # Prepare comparison objects (deepcopy to avoid mutation)
-        old_spec = copy.deepcopy(old_doc.get('spec', {}))
-        new_spec = copy.deepcopy(new_doc.get('spec', {}))
-
-        # Remove fields that don't trigger redeployment
-        for spec in [old_spec, new_spec]:
-            # Remove log level fields
-            spec.pop('logLevel', None)
-
-            # Process worker configurations
-            for worker_type in ['cloudWorker', 'edgeWorker']:
-                if worker_type in spec:
-                    worker = spec[worker_type]
-
-                    worker_list = worker if isinstance(worker, list) else [worker]
-
-                    for worker_item in worker_list:
-                        if not isinstance(worker_item, dict):
-                            continue
-
-                        worker_item.pop('logLevel', None)
-                        worker_item.pop('mounts', None)
-
-                        if 'template' in worker_item and 'spec' in worker_item['template']:
-                            template_spec = worker_item['template']['spec']
-                            # Remove fields that don't require pod recreation
-                            template_spec.pop('dnsPolicy', None)
-                            template_spec.pop('serviceAccountName', None)
-                            template_spec.pop('restartPolicy', None)
-
-                            # Process container configurations
-                            for container in template_spec.get('containers', []):
-                                # Keep only deployment-critical fields
-                                retained_fields = {'image', 'ports', 'nodeName', 'command', 'args'}
-                                container_keys = list(container.keys())
-                                for key in container_keys:
-                                    if key not in retained_fields:
-                                        container.pop(key, None)
-
-        # Normalize for comparison
-        def normalize_spec(spec):
-            """Standardize spec for reliable comparison"""
-            # Sort edgeWorker list by nodeName
-            if 'edgeWorker' in spec and isinstance(spec['edgeWorker'], list):
-                spec['edgeWorker'] = sorted(
-                    spec['edgeWorker'],
-                    key=lambda x: x.get('template', {}).get('spec', {}).get('nodeName', '')
+        try:
+            try:
+                directory = self.runtime_orchestrator.install(
+                    policy=policy,
+                    source_deploy=source_deploy,
+                    source_label=source_label,
+                    install_id=install_id,
+                    cancel_event=cancel_event,
                 )
-            return json.dumps(spec, sort_keys=True, default=str)
+            except RuntimeOperationCancelled:
+                return False, 'Install cancelled by lifecycle operation'
+            except Exception as exc:
+                LOGGER.warning(f'Managed runtime install failed: {exc}')
+                LOGGER.exception(exc)
+                recovery_required = False
+                try:
+                    current = self.runtime_orchestrator.current_session()
+                    if (
+                            current is not None
+                            and current.install_id == install_id
+                            and self.runtime_orchestrator.requires_recovery(current)):
+                        recovery_required = True
+                except Exception:
+                    # Snapshot calibration is itself unavailable. A recovery
+                    # controller is the only bounded way to determine whether
+                    # the initial Session CAS committed before the lost reply.
+                    recovery_required = True
+                    LOGGER.exception(
+                        'failed to inspect runtime session after install error'
+                    )
+                try:
+                    if recovery_required:
+                        self._start_runtime_recovery_async()
+                except Exception:
+                    LOGGER.exception(
+                        'failed to start runtime recovery controller'
+                    )
+                return False, str(exc)
 
-        # Perform comparison
-        old_normalized = normalize_spec(old_spec)
-        new_normalized = normalize_spec(new_spec)
+            # Publish the local projection under the same short admission
+            # boundary used by stop registration. A stop either observes and
+            # removes this projection, or cancels before it can become ready.
+            with self._lifecycle_control_lock:
+                if cancel_event.is_set() or self._stop_admission is not None:
+                    return False, 'Install cancelled by lifecycle operation'
+                session = self.runtime_orchestrator.current_session()
+                if (
+                        session is None
+                        or session.install_id != directory.install_id
+                        or session.phase != 'active'):
+                    raise RuntimeError(
+                        'install completed without an active RuntimeSession snapshot'
+                    )
+                self._activate_local_runtime(directory, start_reconcile=True)
+            return True, 'Install services successfully'
+        except Exception as exc:
+            LOGGER.warning(f'Managed runtime local activation failed: {exc}')
+            LOGGER.exception(exc)
+            try:
+                current = self.runtime_orchestrator.current_session()
+                if (
+                        current is not None
+                        and current.install_id == install_id
+                        and current.phase == 'active'):
+                    self._start_runtime_recovery_async()
+            except Exception:
+                LOGGER.exception('failed to start local projection recovery controller')
+            return False, str(exc)
+        finally:
+            with self._lifecycle_control_lock:
+                if self._install_admission is admission:
+                    self._install_admission = None
+                admission.done_event.set()
 
-        has_changes = old_normalized != new_normalized
-        return has_changes
+    def parse_and_delete_templates(self, expected_install_id=''):
+        """Persist stop intent and start managed runtime cleanup."""
+        expected_install_id = str(expected_install_id or '').strip()
+        if expected_install_id:
+            try:
+                canonical_install_id = str(uuid.UUID(expected_install_id))
+            except (ValueError, AttributeError, TypeError):
+                return False, 'install_id must be a canonical UUID'
+            if expected_install_id != canonical_install_id:
+                return False, 'install_id must be a canonical UUID'
+        with self._lifecycle_control_lock:
+            if self._closed:
+                return False, 'Backend lifecycle is closed'
+        # Complete the one-off Session load before admission serialization. The
+        # second read below is memory-only and closes the install/stop race.
+        self.runtime_orchestrator.current_session()
+        # Register stop before touching any other lifecycle state.  This both
+        # interrupts an in-flight install and prevents an overlapping install
+        # from registering a token until this stop request has settled.
+        with self._lifecycle_control_lock:
+            if self._closed:
+                return False, 'Backend lifecycle is closed'
+            session = self.runtime_orchestrator.current_session()
+            admission = self._install_admission
+            pending_install_id = admission.install_id if admission is not None else ''
+            if (
+                    expected_install_id
+                    and not (
+                        (session is not None and session.install_id == expected_install_id)
+                        or pending_install_id == expected_install_id
+                    )):
+                return True, 'Target installation is already absent'
+            if admission is not None:
+                admission.cancel()
+            stop_admission = self._stop_admission
+            if stop_admission is None:
+                target_install_id = expected_install_id or (
+                    session.install_id if session is not None else pending_install_id
+                )
+                stop_admission = _StopAdmission(
+                    install_id=target_install_id,
+                    done_event=threading.Event(),
+                    operation_id=str(uuid.uuid4()),
+                )
+                self._stop_admission = stop_admission
+                # Stop admission and query admission share one linearization
+                # boundary. A client that observes preparing-uninstall can no
+                # longer open a datasource generation, and the previous result
+                # collector has already been fenced.
+                try:
+                    with self.query_lock:
+                        self._query_admission_enabled = False
+                        self._close_query_locked()
+                except Exception as exc:
+                    result = (False, str(exc))
+                    stop_admission.result = result
+                    if self._stop_admission is stop_admission:
+                        self._stop_admission = None
+                    stop_admission.done_event.set()
+                    LOGGER.warning(f'Managed runtime query shutdown failed: {exc}')
+                    LOGGER.exception(exc)
+                    return result
+                self._bound_runtime_key = None
+                leader = True
+            else:
+                leader = False
 
-    def save_component_yaml(self, docs_list):
-        self.cur_yaml_docs = copy.deepcopy(docs_list)
-        YamlOps.write_all_yaml(docs_list, self.save_yaml_path)
+        # Every caller observes the same durable acceptance result. In
+        # particular, a concurrent follower cannot report success while the
+        # leader has not yet persisted uninstall intent (or its failure).
+        if not leader:
+            stop_admission.done_event.wait()
+            return stop_admission.result or (
+                False, 'Uninstall admission ended without a result',
+            )
 
-    def read_component_yaml(self):
-        if self.cur_yaml_docs:
-            return copy.deepcopy(self.cur_yaml_docs)
-        elif os.path.exists(self.save_yaml_path):
-            return YamlOps.read_all_yaml(self.save_yaml_path)
-        else:
-            return None
+        # If this stop raced an install before its first Session CAS, wait for
+        # the cancelled install to release its token. It can no longer publish
+        # locally because this stop admission remains registered, and any
+        # exact resource identities it persisted are then owned by uninstall.
+        if admission is not None:
+            admission.done_event.wait()
 
-    def update_component_yaml(self, update_docs_list):
-        original_docs_list = self.read_component_yaml()
-        if not original_docs_list:
-            LOGGER.warning('No valid components yaml docs found.')
-            return
-        total_docs, _, _, _ = self.check_and_update_docs_list(original_docs_list, update_docs_list)
-        self.save_component_yaml(total_docs)
-
-    def extract_service_from_source_deployment(self, source_deploy):
-
-        def bfs_dag(dag_graph, id_to_name, node_set, extracted_dag, service_dict):
-            source_list = dag_graph[TaskConstant.START.value]
-            queue = deque(source_list)
-            visited = set(source_list)
-            while queue:
-                current_node = queue.popleft()
-                current_node_item = dag_graph[current_node]
-
-                service_id = current_node_item['id']
-                service = self.find_service_by_id(service_id)
-                service_name = service['service']
-                service_yaml = service['yaml']
-                id_to_name[service_id] = service_name
-
-                if service_id in service_dict:
-                    pre_node_list = service_dict[service_id]['node']
-                    service_dict[service_id]['node'] = list(set(pre_node_list + node_set))
+        result = (False, 'Uninstall did not reach durable acceptance')
+        try:
+            session = self.runtime_orchestrator.current_session()
+            uninstall_started = session is not None and session.phase in {
+                'uninstalling', 'finalizing-uninstall',
+            }
+            if uninstall_started:
+                self.runtime_telemetry.unbind()
+                self.resource_url = None
+                self.result_url = None
+                self.result_file_url = None
+                self.log_fetch_url = None
+                self._ensure_runtime_reconcile_loop(session.install_id)
+                result = (True, 'Uninstall services started')
+            else:
+                # Stop every producer of Scheduler/Kubernetes traffic before
+                # the serialized uninstall transaction. A failed uninstall
+                # leaves telemetry and task admission deliberately unbound.
+                self._stop_runtime_reconcile_loop()
+                self.runtime_telemetry.unbind()
+                session = self.runtime_orchestrator.begin_uninstall(
+                    stop_admission.install_id,
+                )
+                self.resource_url = None
+                self.result_url = None
+                self.result_file_url = None
+                self.log_fetch_url = None
+                if session is not None:
+                    self._local_runtime_error_key = None
+                    self._local_runtime_error = ''
+                    self._start_runtime_reconcile_loop(session.install_id)
+                    result = (True, 'Uninstall services started')
                 else:
-                    service_dict[service_id] = {'service_name': service_name, 'yaml': service_yaml, 'node': node_set}
-                extracted_dag[current_node_item['id']]['service'] = service
+                    self._local_runtime_error_key = None
+                    self._local_runtime_error = ''
+                    result = (True, 'No managed services are installed')
+        except Exception as exc:
+            LOGGER.warning(f'Managed runtime uninstall failed: {exc}')
+            LOGGER.exception(exc)
+            try:
+                current = self.runtime_orchestrator.current_session()
+            except Exception:
+                current = None
+            if current is not None and current.phase == 'active':
+                with self._lifecycle_control_lock:
+                    self._local_runtime_error_key = (
+                        current.install_id,
+                        int(getattr(current, 'active_directory_revision', 0) or 0),
+                    )
+                    self._local_runtime_error = f'local runtime shutdown failed: {exc}'
+            result = (False, str(exc))
+        finally:
+            with self._lifecycle_control_lock:
+                stop_admission.result = result
+                if self._stop_admission is stop_admission:
+                    self._stop_admission = None
+                stop_admission.done_event.set()
+        return result
 
-                for child_id in current_node_item['succ']:
-                    if child_id not in visited:
-                        queue.append(child_id)
-                        visited.add(child_id)
-
-        service_dict = {}
-
-        for s in source_deploy:
-            dag = s['dag']
-            node_set = s['node_set']
-            extracted_dag = copy.deepcopy(dag)
-            del extracted_dag[TaskConstant.START.value]
-
-            id_to_name = {}
-            bfs_dag(dag, id_to_name, node_set, extracted_dag, service_dict)
-
-            renamed_dag = {}
-            for old_key, node in extracted_dag.items():
-                old_id = node.get('id', old_key)
-                new_key = id_to_name.get(old_id, old_id)
-
-                node_new = copy.deepcopy(node)
-                node_new['id'] = new_key
-                if 'prev' in node_new:
-                    node_new['prev'] = [id_to_name.get(x, x) for x in node_new['prev']]
-                if 'succ' in node_new:
-                    node_new['succ'] = [id_to_name.get(x, x) for x in node_new['succ']]
-
-                renamed_dag[new_key] = node_new
-            s['dag'] = renamed_dag
-
-        return service_dict
-
-    def clear_yaml_docs(self):
-        self.cur_yaml_docs = None
-        FileOps.remove_file(self.save_yaml_path)
+    def parse_and_redeploy_services(self, policy=None, cancel_event=None):
+        """Publish a processor rollout; unchanged plans are a successful no-op."""
+        with self._lifecycle_control_lock:
+            if self._closed:
+                return False, 'Backend lifecycle is closed'
+        session = self.runtime_orchestrator.current_session()
+        if session is None:
+            return False, 'no managed runtime session exists'
+        policy = policy or self.find_scheduler_policy_by_id(session.policy_id)
+        if policy is None:
+            return False, f'scheduler policy {session.policy_id!r} does not exist'
+        try:
+            changed = self.runtime_orchestrator.redeploy(
+                policy,
+                cancel_event=cancel_event,
+            )
+        except RuntimeOperationCancelled:
+            return False, 'Redeployment cancelled by lifecycle operation'
+        except RuntimeRetirementPending:
+            return False, 'Redeployment deferred while the previous revision retires'
+        except Exception as exc:
+            LOGGER.warning(f'Managed processor rollout failed: {exc}')
+            LOGGER.exception(exc)
+            return False, str(exc)
+        if changed:
+            directory = self.runtime_orchestrator.active_directory()
+            try:
+                with self._lifecycle_control_lock:
+                    if (
+                        self._stop_admission is not None
+                        or (cancel_event is not None and cancel_event.is_set())
+                    ):
+                        return False, 'Redeployment cancelled by lifecycle operation'
+                    if directory is None:
+                        raise RuntimeError(
+                            'redeployment committed without an active RuntimeDirectory'
+                        )
+                    self._activate_local_runtime(directory)
+            except Exception as exc:
+                LOGGER.warning(f'Managed runtime local projection failed: {exc}')
+                LOGGER.exception(exc)
+                return False, str(exc)
+        return True, 'Redeployment succeeded' if changed else 'Deployment is unchanged'
 
     def find_service_by_id(self, service_id):
         for service in self.services:
             if service['id'] == service_id:
                 return service
         return None
+
+    @staticmethod
+    def service_io_labels(service, field):
+        service_id = service.get('id') or service.get('service') or '<unknown>'
+        value = service.get(field)
+        if not isinstance(value, list):
+            return None, f"Service '{service_id}' field '{field}' must be a list of type labels"
+        if any(not isinstance(item, str) or not item for item in value):
+            return None, f"Service '{service_id}' field '{field}' must contain non-empty string labels"
+        return value, None
+
+    @classmethod
+    def service_io_compatible(cls, parent_service, child_service):
+        parent_outputs, error_msg = cls.service_io_labels(parent_service, 'output')
+        if error_msg:
+            return False, error_msg
+        child_inputs, error_msg = cls.service_io_labels(child_service, 'input')
+        if error_msg:
+            return False, error_msg
+        return bool(set(parent_outputs) & set(child_inputs)), None
 
     def find_dag_by_id(self, dag_id):
         for dag in self.dags:
@@ -592,22 +749,11 @@ class BackendCore:
     def fill_datasource_url(self, url, source_type, source_mode, source_id):
         if not self.inner_datasource:
             return url
-        source_hostname = KubeHelper.get_pod_node(SystemConstant.DATASOURCE.value, self.namespace)
-        if not source_hostname:
-            assert None, 'Datasource pod not exists.'
         source_protocol = source_mode.split('_')[0]
-        source_ip = NodeInfo.hostname2ip(source_hostname)
-        source_port = PortInfo.get_component_port(SystemConstant.DATASOURCE.value)
-        url = f'{source_protocol}://{source_ip}:{source_port}/{source_type}{source_id}'
+        datasource_fqdn = connection_host(f'datasource-edge.{self.namespace}.svc.cluster.local')
+        return f'{source_protocol}://{datasource_fqdn}:8000/{source_type}{source_id}'
 
-        return url
-
-    @staticmethod
-    def check_node_exist(node):
-        return node in NodeInfo.get_node_info()
-
-    @staticmethod
-    def get_edge_nodes():
+    def get_edge_nodes(self):
         def sort_key(item):
             name = item['name']
             patterns = [
@@ -623,28 +769,88 @@ class BackendCore:
                     return group, num
             return len(patterns), 0
 
-        node_role = NodeInfo.get_node_info_role()
-        edge_nodes = [{'name': node_name} for node_name in node_role if node_role[node_name] == 'edge']
+        inventory = self.runtime_orchestrator.node_inventory()
+        edge_nodes = [
+            {'name': node_name}
+            for node_name, record in inventory.items()
+            if record.get('role') == 'edge' and record.get('ready')
+        ]
         edge_nodes.sort(key=sort_key)
         return edge_nodes
 
-    def check_install_state(self):
-        self.install_state = KubeHelper.check_pods_without_string_exists(
-            self.namespace,
-            exclude_str_list=self.system_support_components
-        )
-
-        return self.install_state
-
-    def check_pods_running_state(self):
-        return KubeHelper.check_pods_running(self.namespace)
+    def management_lifecycle_snapshot(self):
+        """Read admission and Session state without blocking the event loop."""
+        # Complete the one-off durable load before taking admission control.
+        self.runtime_orchestrator.current_session()
+        with self._lifecycle_control_lock:
+            admission = self._install_admission
+            pending = (
+                {
+                    'kind': 'install',
+                    'install_id': admission.install_id,
+                    'phase': admission.phase,
+                    'operation_id': admission.operation_id,
+                }
+                if admission is not None else None
+            )
+            # This second read is memory-only. Sampling both values under the
+            # same admission boundary prevents combining an old Session with a
+            # newer installation token from another client.
+            session = self.runtime_orchestrator.current_session()
+            stop = self._stop_admission
+            if pending is None and stop is not None:
+                pending = {
+                    'kind': 'stop',
+                    'install_id': stop.install_id,
+                    'phase': 'preparing-uninstall',
+                    'operation_id': stop.operation_id,
+                }
+            session_key = None
+            if session is not None and session.phase == 'active':
+                session_key = (
+                    session.install_id,
+                    int(getattr(session, 'active_directory_revision', 0) or 0),
+                )
+            stop_matches = bool(
+                session is not None
+                and stop is not None
+                and stop.install_id in {'', session.install_id}
+            )
+            local_ready = bool(
+                session_key is not None
+                and self._bound_runtime_key == session_key
+                and not stop_matches
+                and not (
+                    admission is not None
+                    and admission.install_id == session.install_id
+                )
+            )
+            local_error = (
+                self._local_runtime_error
+                if session_key == self._local_runtime_error_key else ''
+            )
+        return session, pending, local_ready, local_error
 
     def check_simulation_datasource(self):
-        return KubeHelper.check_pod_name('datasource', namespace=self.namespace)
+        return bool(self.template_helper.load_base_info().get('datasource', {}).get('use-simulation'))
 
     def check_dag(self, dag):
 
         def topo_sort(graph):
+            for node, node_info in graph.items():
+                if node == TaskConstant.START.value:
+                    continue
+                service = self.find_service_by_id(node_info['id'])
+                if not service:
+                    error_msg = f"Missing service definition for node {node}"
+                    LOGGER.error(f"DAG Validation Error: {error_msg}")
+                    return False, error_msg
+                for field in ('input', 'output'):
+                    _, error_msg = self.service_io_labels(service, field)
+                    if error_msg:
+                        LOGGER.error(f"DAG Validation Error: {error_msg}")
+                        return False, error_msg
+
             in_degree = {}
             for node in graph.keys():
                 if node != TaskConstant.START.value:
@@ -662,7 +868,11 @@ class BackendCore:
                         error_msg = f"Missing service definition for node {parent if not parent_service else child}"
                         LOGGER.error(f"DAG Validation Error: {error_msg}")
                         return False, error_msg
-                    if child_service['input'] != parent_service['output']:
+                    is_compatible, error_msg = self.service_io_compatible(parent_service, child_service)
+                    if error_msg:
+                        LOGGER.error(f"DAG Validation Error: {error_msg}")
+                        return False, error_msg
+                    if not is_compatible:
                         error_msg = (
                             f"Node connection mismatch, '{parent}' output '{parent_service['output']}', '{child}' input '{child_service['input']}' "
                         )
@@ -698,13 +908,21 @@ class BackendCore:
             if source_id in self.customized_source_result_visualization_configs else self.result_visualization_configs
         viz_functions = self.result_visualization_cache.sync_and_get(viz_configs, namespace='result_visualizer')
 
+        resource_snapshot = None
+        if any(config.get('hook_name') == 'service_queue_length' for config in viz_configs):
+            resource_snapshot = self.runtime_telemetry.snapshot()['resource']
+
         visualization_data = []
         for idx, (viz_config, viz_func) in enumerate(zip(viz_configs, viz_functions)):
             try:
                 if 'save_expense' in viz_config and viz_config['save_expense'] and not is_last:
                     visualization_data.append({"id": idx, "data": {v: None for v in viz_config['variables']}})
                 else:
-                    visualization_data.append({"id": idx, "data": viz_func(task)})
+                    if viz_config.get('hook_name') == 'service_queue_length':
+                        data = viz_func(task, resource=resource_snapshot)
+                    else:
+                        data = viz_func(task)
+                    visualization_data.append({"id": idx, "data": data})
             except Exception as e:
                 LOGGER.warning(f'Failed to load result visualization data: {str(e)}')
                 LOGGER.exception(e)
@@ -715,23 +933,21 @@ class BackendCore:
         viz_configs = self.system_visualization_configs
         viz_functions = self.system_visualization_cache.sync_and_get(viz_configs, namespace='system_visualizer')
 
-        resource_snapshot = None
-        try:
-            # Fetch scheduler resources once to avoid duplicate requests in visualizers
-            self.get_resource_url()
-            if self.resource_url:
-                resource_snapshot = http_request(self.resource_url, method=NetworkAPIMethod.SCHEDULER_GET_RESOURCE)
-        except Exception as e:
-            LOGGER.warning(f'Failed to fetch scheduler resource for system viz: {str(e)}')
-            LOGGER.exception(e)
+        # Scheduler I/O is owned by one background sampler.  UI requests only
+        # transform an immutable last-known-good snapshot.
+        telemetry = self.runtime_telemetry.snapshot()
+        resource_snapshot = telemetry['resource']
+        scheduling_overhead = telemetry['scheduling_overhead']
 
         visualization_data = []
-        for idx, viz_func in enumerate(viz_functions):
+        for idx, (viz_config, viz_func) in enumerate(zip(viz_configs, viz_functions)):
             try:
-                # Prefer passing shared resource snapshot when supported, fallback otherwise
-                try:
+                hook_name = viz_config.get('hook_name')
+                if hook_name in {'cpu_usage', 'memory_usage'}:
                     data = viz_func(resource=resource_snapshot)
-                except TypeError:
+                elif hook_name == 'schedule_overhead':
+                    data = viz_func(scheduling_overhead=scheduling_overhead)
+                else:
                     data = viz_func()
                 visualization_data.append({"id": idx, "data": data})
             except Exception as e:
@@ -740,7 +956,7 @@ class BackendCore:
 
         return visualization_data
 
-    def parse_task_result(self, results):
+    def parse_task_result(self, results, query_generation=None):
         for result in results:
             if result is None or result == '':
                 continue
@@ -750,14 +966,36 @@ class BackendCore:
             source_id = task.get_source_id()
             LOGGER.debug(task.get_delay_info())
 
-            if not self.source_open:
-                break
+            task_copy = copy.deepcopy(task)
+            with self.query_lock:
+                if (
+                    not self.source_open
+                    or (
+                        query_generation is not None
+                        and query_generation != self._query_generation
+                    )
+                ):
+                    break
+                task_queue = self.task_results.get(source_id)
+                if task_queue is not None:
+                    # Queue.put is non-blocking.  Keeping generation validation
+                    # and publication in the same critical section means close
+                    # cannot race between them and accept an old collector's
+                    # final result.
+                    task_queue.put(task_copy)
+                    continue
 
-            self.task_results[source_id].put(copy.deepcopy(task))
+            LOGGER.warning(
+                f'Ignore result for unknown source {source_id!r} in query generation '
+                f'{query_generation!r}'
+            )
 
-    def fetch_visualization_data(self, source_id):
-        assert source_id in self.task_results, f'Source_id {source_id} not found in task results!'
-        tasks = self.task_results[source_id].get_all()
+    def fetch_visualization_data(self, source_id, task_queue=None):
+        if task_queue is None:
+            task_queue = self.task_results.get(source_id)
+        if task_queue is None:
+            return []
+        tasks = task_queue.get_all()
         vis_results = []
 
         with Timer(f'Visualization preparation for {len(tasks)} tasks'):
@@ -779,99 +1017,349 @@ class BackendCore:
 
         return vis_results
 
-    def run_get_result(self):
+    def open_query(self, source_label):
+        """Atomically open one datasource/result-collector generation."""
+        source_config = self.find_datasource_configuration_by_label(source_label)
+        if not source_config:
+            return False, 'Datasource configuration not exists'
+
+        with self.query_lock:
+            if not self._query_admission_enabled or not self.result_url:
+                return False, 'Runtime is not ready for datasource queries'
+            if self.source_open:
+                if self.source_label == source_label:
+                    return True, 'Datasource is already open'
+                return False, 'Another datasource is already open, please close it first'
+
+            self._query_generation += 1
+            generation = self._query_generation
+            cancel_event = threading.Event()
+            self._query_cancel_event = cancel_event
+            self.source_open = True
+            self.source_label = source_label
+            source_ids = [source['id'] for source in source_config.get('source_list') or ()]
+            self.task_results = {
+                source_id: Queue(self._RESULT_WINDOW_SIZE)
+                for source_id in source_ids
+            }
+            # Runtime endpoints are immutable for this install.  Capture the
+            # distributor URL per generation so a cancelled collector cannot
+            # refresh or overwrite lifecycle-owned URL bindings after uninstall.
+            result_url = self.result_url
+            self.is_get_result = True
+            thread = threading.Thread(
+                target=self.run_get_result,
+                args=(generation, cancel_event, result_url),
+                name=f'dayu-result-collector-{generation}',
+                daemon=True,
+            )
+            self._result_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                cancel_event.set()
+                self.source_open = False
+                self.source_label = ''
+                self.is_get_result = False
+                self.task_results.clear()
+                self._query_cancel_event = None
+                self._result_thread = None
+                raise
+
+        return True, 'Datasource open successfully'
+
+    def _close_query_locked(self):
+        """Cancel and clear the current generation while ``query_lock`` is held."""
+        if self._query_cancel_event is not None:
+            self._query_cancel_event.set()
+        self._query_generation += 1
+        self._query_cancel_event = None
+        self._result_thread = None
+        self.source_open = False
+        self.source_label = ''
+        self.is_get_result = False
+        self.task_results.clear()
+        self.customized_source_result_visualization_configs.clear()
+
+    def close_query(self):
+        """Cancel startup/collection immediately and clear its local state."""
+        with self.query_lock:
+            if not self.source_open and not self.is_get_result and self._query_cancel_event is None:
+                return True, 'Datasource is already closed'
+            self._close_query_locked()
+        return True, 'Datasource close successfully'
+
+    def query_snapshot(self, include_queues=False):
+        """Return one internally consistent, immutable query-state snapshot."""
+        with self.query_lock:
+            return {
+                'open': self.source_open,
+                'source_label': self.source_label,
+                'generation': self._query_generation,
+                'queues': dict(self.task_results) if include_queues else None,
+            }
+
+    def is_query_generation_active(self, generation):
+        with self.query_lock:
+            return self.source_open and generation == self._query_generation
+
+    def run_get_result(self, query_generation, cancel_event, result_url):
+        cancel_event = cancel_event or threading.Event()
         time_ticket = 0
-        while self.is_get_result:
+        try:
+            while not cancel_event.wait(1):
+                with self.query_lock:
+                    if (
+                        not self.is_get_result
+                        or query_generation != self._query_generation
+                        or cancel_event is not self._query_cancel_event
+                    ):
+                        return
+                try:
+                    response = http_request(result_url,
+                                            method=NetworkAPIMethod.DISTRIBUTOR_RESULT,
+                                            timeout=self._RESULT_REQUEST_TIMEOUT_SECONDS,
+                                            json={
+                                                'time_ticket': time_ticket,
+                                                'size': self._RESULT_WINDOW_SIZE,
+                                            })
+
+                    if cancel_event.is_set():
+                        return
+                    if not response:
+                        LOGGER.debug('[NO RESULT] Request result url failed.')
+                        continue
+
+                    time_ticket = response["time_ticket"]
+                    results = response['result']
+                    LOGGER.debug(f'Fetch {len(results)} tasks from time ticket: {time_ticket}')
+                    self.parse_task_result(results, query_generation=query_generation)
+
+                except Exception as e:
+                    LOGGER.warning(f'Unexpected error occurred in getting task result: {str(e)}')
+                    LOGGER.exception(e)
+        finally:
+            with self.query_lock:
+                if (
+                    query_generation == self._query_generation
+                    and cancel_event is self._query_cancel_event
+                ):
+                    self.is_get_result = False
+                    self._result_thread = None
+
+    def _start_runtime_reconcile_loop(self, install_id):
+        """Start the single publication/retirement worker for one installation."""
+        install_id = str(install_id or '').strip()
+        if not install_id:
+            raise ValueError('runtime reconcile loop requires an install_id')
+        # ``close`` publishes _closed first and then takes this same lock to
+        # invalidate the worker. Whichever side wins is therefore linearized:
+        # either startup observes closure, or close stops the newly made worker.
+        with self._runtime_reconcile_lock:
+            if self._closed:
+                raise RuntimeError('backend lifecycle is closed')
+            if self._runtime_reconcile_stop_event is not None:
+                self._runtime_reconcile_stop_event.set()
+            stop_event = threading.Event()
+            thread = threading.Thread(
+                target=self.run_runtime_reconcile,
+                args=(stop_event, install_id),
+                name=f'dayu-runtime-reconcile-{install_id}',
+                daemon=True,
+            )
+            self._runtime_reconcile_stop_event = stop_event
+            self._runtime_reconcile_thread = thread
             try:
-                time.sleep(1)
-                self.get_result_url()
-                if not self.result_url:
-                    LOGGER.debug('[NO RESULT] Fetch result url failed.')
-                    continue
-                response = http_request(self.result_url,
-                                        method=NetworkAPIMethod.DISTRIBUTOR_RESULT,
-                                        json={'time_ticket': time_ticket, 'size': 0})
+                thread.start()
+            except Exception:
+                stop_event.set()
+                self._runtime_reconcile_stop_event = None
+                self._runtime_reconcile_thread = None
+                raise
 
-                if not response:
-                    self.result_url = None
-                    self.result_file_url = None
-                    LOGGER.debug('[NO RESULT] Request result url failed.')
-                    continue
+    def _ensure_runtime_reconcile_loop(self, install_id):
+        """Keep the existing lifecycle worker, or restore it if it exited."""
+        with self._runtime_reconcile_lock:
+            stop_event = self._runtime_reconcile_stop_event
+            running = stop_event is not None and not stop_event.is_set()
+        if not running:
+            self._start_runtime_reconcile_loop(install_id)
 
-                time_ticket = response["time_ticket"]
-                results = response['result']
-                LOGGER.debug(f'Fetch {len(results)} tasks from time ticket: {time_ticket}')
-                self.parse_task_result(results)
+    def _stop_runtime_reconcile_loop(self):
+        """Invalidate the runtime worker before lifecycle mutation."""
+        with self._runtime_reconcile_lock:
+            if self._runtime_reconcile_stop_event is not None:
+                self._runtime_reconcile_stop_event.set()
+            self._runtime_reconcile_stop_event = None
+            self._runtime_reconcile_thread = None
 
-            except Exception as e:
-                LOGGER.warning(f'Unexpected error occurred in getting task result: {str(e)}')
-                LOGGER.exception(e)
+    @staticmethod
+    def _runtime_progress_key(session):
+        """Return lifecycle structure only; timestamps/errors are not progress."""
+        if session is None:
+            return None
 
-    def _sleep_until_next_redeployment_cycle(self, cycle_started_t):
-        interval_s = max(0.0, float(self.processor_redeployment_interval_s))
-        if interval_s <= 0.0:
-            return
+        def runtime_ids(units):
+            return tuple(
+                getattr(unit, 'runtime_id', repr(unit)) for unit in (units or ())
+            )
 
-        elapsed_s = max(0.0, time.monotonic() - cycle_started_t)
-        sleep_s = max(0.0, interval_s - elapsed_s)
-        if sleep_s > 0.0:
-            time.sleep(sleep_s)
-
-    def run_cycle_deploy(self):
-        time.sleep(5)
-        while self.is_cycle_deploy:
-            cycle_started_t = time.monotonic()
-            try:
-                if not self.yaml_dict or not self.source_deploy:
-                    LOGGER.debug('[Redeployment] Configuration is lacked, cancel redeployment request..')
-                elif not self.check_pods_running_state():
-                    LOGGER.debug('[Redeployment] Pods is in error state, cancel redeployment request..')
-                else:
-                    redeploy_docs_list = self.template_helper.finetune_yaml_parameters(
-                        copy.deepcopy(self.yaml_dict),
-                        copy.deepcopy(self.source_deploy),
-                        scopes=['processor'],
-                        current_docs=self.read_component_yaml(),
+        retirement = getattr(session, 'retirement', None)
+        uninstall = getattr(session, 'uninstall', None)
+        return (
+            getattr(session, 'install_id', ''),
+            getattr(session, 'operation_id', ''),
+            getattr(session, 'phase', ''),
+            int(getattr(session, 'active_directory_revision', 0) or 0),
+            runtime_ids(getattr(session, 'active', ())),
+            runtime_ids(getattr(session, 'pending', ())),
+            runtime_ids(getattr(session, 'cleanup', ())),
+            (
+                getattr(retirement, 'revision', 0),
+                runtime_ids(getattr(retirement, 'units', ())),
+            ) if retirement is not None else None,
+            (
+                bool(getattr(uninstall, 'deletion_submitted', False)),
+                tuple(
+                    (
+                        getattr(resource, 'kind', ''),
+                        getattr(resource, 'name', ''),
+                        getattr(resource, 'uid', ''),
                     )
+                    for resource in getattr(uninstall, 'remaining', ())
+                ),
+            ) if uninstall is not None else None,
+        )
 
-                    self.uninstall_lock = True
+    def run_runtime_reconcile(self, stop_event, install_id):
+        interval = max(0.0, float(self.processor_redeployment_interval_s))
+        if interval <= 0:
+            LOGGER.info('[Redeployment] Automatic processor rollout is disabled.')
+        next_rollout = time.monotonic() + interval if interval > 0 else None
+        retry_delay = 1.0
+        try:
+            while not stop_event.wait(retry_delay):
+                session = None
+                before_key = None
+                cycle_failed = False
+                progressed = False
+                uninstall_cycle = False
+                try:
+                    with self._runtime_reconcile_lock:
+                        if (
+                            self._runtime_reconcile_stop_event is not stop_event
+                            or stop_event.is_set()
+                        ):
+                            return
+                    session = self.runtime_orchestrator.current_session()
+                    if (
+                        session is None
+                        or session.install_id != install_id
+                    ):
+                        LOGGER.debug(
+                            '[Runtime Reconcile] Managed runtime session changed; stop worker.'
+                        )
+                        return
+                    before_key = self._runtime_progress_key(session)
+                    if stop_event.is_set():
+                        return
+                    uninstall_cycle = session.phase in {
+                        'uninstalling', 'finalizing-uninstall',
+                    }
+                    if uninstall_cycle:
+                        cleanup_progressed = self.runtime_orchestrator.uninstall(
+                            install_id,
+                        )
+                        session = self.runtime_orchestrator.current_session()
+                        if session is None:
+                            return
+                        progressed = bool(cleanup_progressed)
+                    else:
+                        if session.phase == 'active':
+                            progressed = self._ensure_local_runtime_projection(
+                                session,
+                                cancel_event=stop_event,
+                            ) or progressed
+                        changed = self.runtime_orchestrator.reconcile_retirement(
+                            cancel_event=stop_event,
+                        )
+                        session = self.runtime_orchestrator.current_session()
+                        if session is None or session.install_id != install_id:
+                            return
+                        if session.phase == 'active':
+                            progressed = self._ensure_local_runtime_projection(
+                                session,
+                                cancel_event=stop_event,
+                            ) or progressed
+                        if (
+                                session.phase == 'active'
+                                and next_rollout is not None
+                                and time.monotonic() >= next_rollout):
+                            policy = self.find_scheduler_policy_by_id(session.policy_id)
+                            result, message = self.parse_and_redeploy_services(
+                                policy,
+                                cancel_event=stop_event,
+                            )
+                            next_rollout = time.monotonic() + interval
+                            if stop_event.is_set():
+                                return
+                            if not result:
+                                cycle_failed = True
+                                LOGGER.warning(f'[Redeployment] {message}')
+                            session = self.runtime_orchestrator.current_session()
+                            if session is None or session.install_id != install_id:
+                                return
+                        progressed = bool(changed) or progressed
+
+                    if not uninstall_cycle:
+                        progressed = (
+                            progressed
+                            or self._runtime_progress_key(session) != before_key
+                        )
+                    if (
+                            session is not None
+                            and session.phase in {'uninstalling', 'finalizing-uninstall'}
+                            and not progressed):
+                        # Remaining cleanup is expected, not an exception. It
+                        # still uses the existing reconcile backoff so a stuck
+                        # resource cannot turn frontend polling into Kubernetes
+                        # list traffic.
+                        cycle_failed = True
+                    deferred_failure = bool(
+                        session is not None
+                        and getattr(session, 'last_error', '')
+                        and (
+                            getattr(session, 'cleanup', ())
+                            or getattr(session, 'retirement', None) is not None
+                            or str(getattr(session, 'phase', '')).startswith('publishing')
+                        )
+                    )
+                    if deferred_failure and not progressed:
+                        cycle_failed = True
+                except Exception as exc:
                     try:
-                        self._last_processor_redeploy_applied = None
-                        res, msg = self.parse_and_redeploy_services(redeploy_docs_list)
-
-                        if res:
-                            if self._last_processor_redeploy_applied is not False:
-                                self.update_component_yaml(redeploy_docs_list)
-                                LOGGER.info('[Redeployment] Redeployment succeeded.')
-                            else:
-                                LOGGER.debug('[Redeployment] Redeployment skipped; no processor changes were applied.')
-                        else:
-                            LOGGER.warning(f'[Redeployment] Redeployment failed, {msg}')
-                    finally:
-                        self.uninstall_lock = False
-
-            except timeout_exceptions.FunctionTimedOut as e:
-                self.uninstall_lock = False
-                LOGGER.warning(
-                    '[Redeployment] Timeout escaped redeployment cycle; keep redeployment thread alive.'
-                )
-                LOGGER.exception(e)
-            except Exception as e:
-                self.uninstall_lock = False
-                LOGGER.warning(f'[Redeployment] Unexpected error occurred in redeployment: {str(e)}')
-                LOGGER.exception(e)
-            except BaseException as e:
-                if isinstance(e, (KeyboardInterrupt, SystemExit)):
-                    raise
-                self.uninstall_lock = False
-                LOGGER.warning(
-                    f'[Redeployment] Non-standard error occurred in redeployment: {str(e)}; '
-                    'keep redeployment thread alive.'
-                )
-                LOGGER.exception(e)
-
-            if self.is_cycle_deploy:
-                self._sleep_until_next_redeployment_cycle(cycle_started_t)
+                        current = self.runtime_orchestrator.current_session()
+                    except Exception:
+                        current = None
+                    progressed = (
+                        not uninstall_cycle
+                        and before_key is not None
+                        and self._runtime_progress_key(current) != before_key
+                    )
+                    cycle_failed = True
+                    if interval > 0:
+                        next_rollout = time.monotonic() + interval
+                    LOGGER.warning(f'[Runtime Reconcile] Unexpected error: {exc}')
+                    LOGGER.exception(exc)
+                if cycle_failed and not progressed:
+                    retry_delay = min(retry_delay * 2.0, 30.0)
+                else:
+                    retry_delay = 1.0
+        finally:
+            with self._runtime_reconcile_lock:
+                if self._runtime_reconcile_stop_event is stop_event:
+                    self._runtime_reconcile_stop_event = None
+                    self._runtime_reconcile_thread = None
 
     @staticmethod
     def _count_jsonl_records(file_path):
@@ -983,11 +1471,13 @@ class BackendCore:
         return export_path
 
     def get_system_parameters(self):
-        # Skip system parameters retrieving when not installed
-        if not self.installed_running_state or not self.install_state:
+        # A durable active Session is insufficient: only the exact directory
+        # generation projected by this Backend process owns local telemetry.
+        _, _, local_ready, _ = self.management_lifecycle_snapshot()
+        if not local_ready:
             return []
 
-        # Backend-controlled timestamp and single resource fetch per request
+        # Backend-controlled timestamp; scheduler values are already cached.
         timestamp = time.strftime('%H:%M:%S', time.localtime())
 
         data = self.prepare_system_visualizations_data()
@@ -1003,6 +1493,24 @@ class BackendCore:
             LOGGER.exception(e)
 
         return [snapshot]
+
+    def get_runtime_telemetry(self, logical_service=''):
+        return self.runtime_telemetry.snapshot(logical_service=logical_service)
+
+    def close(self):
+        with self._lifecycle_control_lock:
+            self._closed = True
+            self._runtime_recovery_stop_event.set()
+            self._runtime_recovery_wake_event.set()
+            if self._install_admission is not None:
+                self._install_admission.cancel()
+            self._bound_runtime_key = None
+        self._stop_runtime_reconcile_loop()
+        with self.query_lock:
+            self._query_admission_enabled = False
+            self._close_query_locked()
+        self.runtime_telemetry.unbind()
+        self.runtime_telemetry.close()
 
     def check_datasource_config(self, config_path):
         if not YamlOps.is_yaml_file(config_path):
@@ -1059,47 +1567,23 @@ class BackendCore:
             LOGGER.exception(e)
             return None
 
-    def get_resource_url(self):
-        cloud_hostname = NodeInfo.get_cloud_node()
-        try:
-            scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        except Exception as e:
-            LOGGER.warning(f'Get resource url failed: {str(e)}')
-            LOGGER.exception(e)
-            return
+    @staticmethod
+    def _runtime_unit(directory, component):
+        matches = [unit for unit in directory.routes if unit.slot.component == component]
+        if len(matches) != 1 or matches[0].endpoint is None:
+            raise RuntimeError(f'RuntimeDirectory requires exactly one endpoint for {component!r}')
+        return matches[0]
 
-        self.resource_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                          port=scheduler_port,
-                                          path=NetworkAPIPath.SCHEDULER_GET_RESOURCE)
-
-    def get_result_url(self):
-        cloud_hostname = NodeInfo.get_cloud_node()
-        try:
-            distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
-        except Exception as e:
-            LOGGER.warning(f'Get result url failed: {str(e)}')
-            LOGGER.exception(e)
-            return
-
-        self.result_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                        port=distributor_port,
-                                        path=NetworkAPIPath.DISTRIBUTOR_RESULT)
-        self.result_file_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                             port=distributor_port,
-                                             path=NetworkAPIPath.DISTRIBUTOR_FILE)
-
-    def get_log_url(self):
-        cloud_hostname = NodeInfo.get_cloud_node()
-        try:
-            distributor_port = PortInfo.get_component_port(SystemConstant.DISTRIBUTOR.value)
-        except Exception as e:
-            LOGGER.warning(f'Get log url failed: {str(e)}')
-            LOGGER.exception(e)
-            return
-
-        self.log_fetch_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                           port=distributor_port,
-                                           path=NetworkAPIPath.DISTRIBUTOR_EXPORT_RESULT_LOG)
+    def _bind_runtime_urls(self, directory):
+        scheduler = self._runtime_unit(directory, 'scheduler').endpoint
+        distributor = self._runtime_unit(directory, 'distributor').endpoint
+        scheduler_base = f'http://{scheduler.url_authority}'
+        distributor_base = f'http://{distributor.url_authority}'
+        self.resource_url = f'{scheduler_base}{NetworkAPIPath.SCHEDULER_GET_RESOURCE}'
+        self.runtime_telemetry.bind(self.resource_url, directory)
+        self.result_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_RESULT}'
+        self.result_file_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_FILE}'
+        self.log_fetch_url = f'{distributor_base}{NetworkAPIPath.DISTRIBUTOR_EXPORT_RESULT_LOG}'
 
     def get_file_result(self, file_name):
         if not self.result_file_url:
@@ -1119,8 +1603,8 @@ class BackendCore:
 
     def open_result_log_export_stream(self):
         self.parse_base_info()
-        self.get_log_url()
-        if not self.log_fetch_url:
+        _, _, local_ready, _ = self.management_lifecycle_snapshot()
+        if not local_ready or not self.log_fetch_url:
             return None
 
         response = http_request(

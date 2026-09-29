@@ -17,7 +17,7 @@ class NoGraphTopologyEncoders(nn.Module):
     runtime features, but they no longer receive learned topology embeddings.
     """
 
-    def __init__(self, d_model: int = 64, num_roles: int = 2, role_emb_dim: int = 8, dropout: float = 0.0):
+    def __init__(self, d_model: int = 64):
         super().__init__()
         self.d_model = int(d_model)
 

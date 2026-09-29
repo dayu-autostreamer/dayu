@@ -23,13 +23,6 @@ declare type BreadcrumbState<T = any> = {
 	routeSplitIndex: number;
 };
 
-// navBars search
-declare type SearchState<T = any> = {
-	isShowSearch: boolean;
-	menuQuery: string;
-	tagsViewList: T[];
-};
-
 // navBars tagsView
 declare type TagsViewState<T = any> = {
 	routeActive: string | T;

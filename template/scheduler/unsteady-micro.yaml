@@ -1,0 +1,135 @@
+position: cloud
+pod-template:
+  image: scheduler
+  imagePullPolicy: Always
+  env:
+    - name: SCH_CONFIG_EXTRACTION_NAME
+      value: simple
+    - name: SCH_SCENARIO_RETRIEVAL_NAME
+      value: steady
+    - name: SCH_STARTUP_POLICY_NAME
+      value: fixed
+    - name: SCH_POLICY_RETRIEVAL_NAME
+      value: simple
+    - name: SCH_SELECTION_POLICY_NAME
+      value: fixed
+    - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
+      value: source-edge-cloud
+    - name: SCH_REDEPLOYMENT_POLICY_NAME
+      value: non
+    - name: SCH_AGENT_NAME
+      value: unsteady
+    - name: SCH_AGENT_PARAMETERS
+      value: >
+        {
+          'sch_param':{
+              'record_path':'records/context',
+              'if_stop_record_in_single_cycle':1,
+              'stop_max_frame_num':1000,
+          },
+          'unsteady_param':{
+              'schedule_type':'micro',
+
+              'kb_path':'test_kb/kb2',
+              'delay_cons':0.3,
+              'acc_cons':0.6,
+              'delay_weight':0.8,
+              'delay_cons_adjust':0.7,
+              'acc_cons_adjust':1.2,
+              'default_policy':{
+                  'fps':30,
+                  'resolution':'360p',
+                  'buffer_size':4,
+                  'edge_serv_num':0
+              },
+              'acc_sample_interval':20,
+              'history_length':3,
+              'stop_threshold':0.1,
+              'cluster_threshold':0.5,
+              'if_online_train':False,
+              'macro_update_interval':0.01,
+              'context_analyze_type':1,
+
+              'feedback_weight':{
+                  'delay_decrease_weight':{'fps':-0.7071067811865475, 'resolution':-0.7071067811865475, 'buffer_size':0, 'edge_serv_num':0},
+                  'acc_increase_weight':{'fps':0.7071067811865475, 'resolution':0.7071067811865475, 'buffer_size':0, 'edge_serv_num':0}
+              },
+              'coeff_info':{
+                              'step_coeff':{
+                                  'start_value':10,
+                                  'add_interval':5,
+                                  'min_value':10,
+                                  'max_value':1000
+                              },
+                          },
+
+              'corrector_param' : {
+                      'corrector_pool_threshold':0.2,
+                      'detect':{
+                          'n':2,
+                          'coeff_window_length':10,
+                          'x_sample_window_length':10,
+                          'y_sample_window_length':10
+                      },
+                      'classify':{
+                          'n':2,
+                          'coeff_window_length':10,
+                          'x_sample_window_length':10,
+                          'y_sample_window_length':10
+                      },
+                      'trans':{
+                          'n':1,
+                          'coeff_window_length':10,
+                          'x_sample_window_length':10,
+                          'y_sample_window_length':10
+                      },
+                      'acc':{
+                          'n':1,
+                          'coeff_window_length':10,
+                          'x_sample_window_length':10,
+                          'y_sample_window_length':10
+                      }
+                  },
+
+              'queue_param':{
+                  'detect_edge':{
+                      'max_diff_thr':50,
+                      'min_diff_thr':10,
+                      'min_anylze_thr':10,
+                      'stable_thr':0.01,
+                      'fit_thr':0.9,
+                      'history_window_length':100
+                  },
+                  'detect_cloud':{
+                      'max_diff_thr':50,
+                      'min_diff_thr':10,
+                      'min_anylze_thr':10,
+                      'stable_thr':0.01,
+                      'fit_thr':0.9,
+                      'history_window_length':100
+                  },
+                  'classify_edge':{
+                      'max_diff_thr':50,
+                      'min_diff_thr':10,
+                      'min_anylze_thr':10,
+                      'stable_thr':0.01,
+                      'fit_thr':0.9,
+                      'history_window_length':100
+                  },
+                  'classify_cloud':{
+                      'max_diff_thr':50,
+                      'min_diff_thr':10,
+                      'min_anylze_thr':10,
+                      'stable_thr':0.01,
+                      'fit_thr':0.9,
+                      'history_window_length':100
+                  }
+              },
+          }
+        }
+port-open:
+  pos: cloud
+  port: 9000
+file-mount:
+  - pos: cloud
+    path: 'scheduler/steady/'

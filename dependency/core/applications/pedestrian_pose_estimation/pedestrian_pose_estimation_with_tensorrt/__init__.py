@@ -1,0 +1,4 @@
+from .pedestrian_pose_estimation_tensorrt8 import PedestrianPoseEstimationTensorRT8
+from .pedestrian_pose_estimation_tensorrt10 import PedestrianPoseEstimationTensorRT10
+
+__all__ = ['PedestrianPoseEstimationTensorRT8', 'PedestrianPoseEstimationTensorRT10']

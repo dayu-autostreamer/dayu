@@ -1,7 +1,7 @@
 from typing import List, Optional, Tuple
 from dataclasses import dataclass, fields, replace
 
-from core.lib.network import NodeInfo
+from core.lib.runtime import RuntimeContext
 from core.lib.content import DAG
 from core.lib.common import TaskConstant
 
@@ -96,7 +96,10 @@ class DeploymentConstraintCfg:
 
 class PhysicalTopology:
     def __init__(self, edge_nodes: list, source_device: str):
-        cloud_node = NodeInfo.get_cloud_node()
+        context = RuntimeContext.get_default()
+        cloud_node = context.cloud_node or context.local_node
+        if not cloud_node:
+            raise RuntimeError("runtime bootstrap does not identify the cloud node")
         edge_nodes = list(dict.fromkeys(edge_nodes or []))
         if not edge_nodes:
             if source_device == cloud_node:

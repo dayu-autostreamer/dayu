@@ -89,6 +89,42 @@ def _safe_float(value: Any) -> float:
         return 0.0
 
 
+def _total_timestamp(task: dict[str, Any], suffix: str) -> float | None:
+    """Return one task-level timestamp identified by its Dayu tag suffix."""
+
+    tmp_data = task.get("tmp_data") or {}
+    if not isinstance(tmp_data, dict):
+        return None
+    for key, value in tmp_data.items():
+        if not str(key).endswith(suffix):
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0.0 else None
+    return None
+
+
+def _task_end_to_end_latency(
+    task: dict[str, Any],
+    service_sum: float,
+) -> tuple[float, str]:
+    """Resolve generator-to-distributor latency, with a legacy fallback.
+
+    Summing per-service spans is not an end-to-end latency for a fork-join
+    DAG because parallel branches overlap.  Runtime traces record the exact
+    SLO interval in task ``tmp_data``; old synthetic/test records without
+    these timestamps retain the historical service-sum fallback.
+    """
+
+    start = _total_timestamp(task, ":total_start_time")
+    end = _total_timestamp(task, ":total_end_time")
+    if start is not None and end is not None and end >= start:
+        return end - start, "task_timestamps"
+    return max(0.0, float(service_sum)), "service_sum_fallback"
+
+
 def _round_metric(value: float, digits: int = 3) -> float:
     return round(float(value), digits)
 
@@ -181,13 +217,18 @@ def build_task_details(tasks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         execute_total = sum(service["execute_time"] for service in services)
         real_execute_total = sum(service["real_execute_time"] for service in services)
         transmit_total = sum(service["transmit_time"] for service in services)
-        task_latency = execute_total + transmit_total
+        service_sum = execute_total + transmit_total
+        task_latency, latency_source = _task_end_to_end_latency(
+            task, service_sum
+        )
 
         task_detail = copy.deepcopy(task)
         task_detail["analysis"] = {
             "task_index": index,
             "service_count": len(services),
             "task_latency_seconds": _round_metric(task_latency),
+            "task_latency_source": latency_source,
+            "service_sum_seconds": _round_metric(service_sum),
             "execute_time_seconds": _round_metric(execute_total),
             "real_execute_time_seconds": _round_metric(real_execute_total),
             "transmit_time_seconds": _round_metric(transmit_total),
@@ -229,7 +270,7 @@ def summarize_tasks(tasks: Sequence[dict[str, Any]], slo_target_seconds: float =
         edge_devices.update(str(device) for device in task.get("all_edge_devices", []) if device)
         root_task_ids.add(str(task.get("root_uuid") or task.get("task_uuid") or f"task-{index}"))
 
-        task_latency = 0.0
+        service_sum = 0.0
         for service in _iter_services(task):
             execute_time = service["execute_time"]
             real_execute_time = service["real_execute_time"]
@@ -237,7 +278,7 @@ def summarize_tasks(tasks: Sequence[dict[str, Any]], slo_target_seconds: float =
             stage_latency = service["stage_latency"]
             execute_device = service["execute_device"]
 
-            task_latency += stage_latency
+            service_sum += stage_latency
 
             rollup = service_rollup[service["name"]]
             rollup["occurrences"] += 1
@@ -247,6 +288,7 @@ def summarize_tasks(tasks: Sequence[dict[str, Any]], slo_target_seconds: float =
             rollup["stage_latencies"].append(stage_latency)
             rollup["execute_devices"].update([execute_device])
 
+        task_latency, _ = _task_end_to_end_latency(task, service_sum)
         task_latencies.append(task_latency)
 
     services: dict[str, dict[str, Any]] = {}

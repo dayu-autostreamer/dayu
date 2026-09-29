@@ -1,15 +1,17 @@
 import os
 from datetime import datetime
 
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
-from fastapi.routing import APIRoute
-from starlette.responses import JSONResponse, FileResponse, StreamingResponse
-from starlette.requests import Request
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.routing import APIRoute
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
+from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 
-from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 from core.lib.common import FileOps
 from core.lib.content import Task
+from core.lib.network import NetworkAPIMethod, NetworkAPIPath, task_ack
+
 from .distributor import Distributor
 
 
@@ -68,16 +70,18 @@ class DistributorServer:
             allow_methods=["*"], allow_headers=["*"],
         )
 
-    async def distribute_data(self, backtask: BackgroundTasks, file: UploadFile = File(...), data: str = Form(...)):
+    async def distribute_data(self, file: UploadFile = File(...), data: str = Form(...)):
         file_data = await file.read()
-        backtask.add_task(self.distribute_data_background, data, file_data)
+        return await run_in_threadpool(self.accept_result, data, file_data)
 
-    def distribute_data_background(self, data, file_data):
+    def accept_result(self, data, file_data):
         cur_task = Task.deserialize(data)
+        self.distributor.record_transmit_ts(cur_task)
+        if not self.distributor.distribute_data(cur_task):
+            raise HTTPException(status_code=503, detail="task result ownership was not acknowledged")
         if file_data:
             FileOps.save_task_file(cur_task, file_data)
-        self.distributor.record_transmit_ts(cur_task)
-        self.distributor.distribute_data(cur_task)
+        return task_ack(cur_task)
 
     async def query_result(self, request: Request):
         data = await request.json()

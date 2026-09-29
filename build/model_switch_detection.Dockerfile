@@ -1,6 +1,7 @@
 ARG REG=docker.io
+ARG BASE_REPO=dayuhub
 ARG TAG=latest
-FROM ${REG}/dayuhub/dayubase:${TAG}
+FROM ${REG}/${BASE_REPO}/dayubase:${TAG}
 
 LABEL authors="Wenyi Dai"
 

@@ -1,6 +1,6 @@
 import os
 
-workers = 4
+workers = 1
 
 worker_class = "uvicorn.workers.UvicornWorker"
 

@@ -1,16 +1,31 @@
+import ast
 import importlib
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from core.lib.common import ClassFactory, ClassType, YamlOps
 from core.lib.content import Task
 
 
+bbox_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.bbox_frame_visualizer")
+event_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.event_frame_visualizer")
 image_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.image_visualizer")
 multiple_roi_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.multiple_roi_frame_visualizer")
+pose_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.pose_frame_visualizer")
 roi_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.roi_frame_visualizer")
 roi_label_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.roi_label_frame_visualizer")
+segmentation_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.segmentation_frame_visualizer")
+text_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.text_frame_visualizer")
+track_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.track_frame_visualizer")
+trajectory_frame_visualizer_module = importlib.import_module("core.lib.algorithms.result_visualizer.trajectory_frame_visualizer")
+
+
+def content_profile(frame_count=1):
+    return {
+        "frame_count": frame_count,
+    }
 
 
 def service_entry(name, *, execute_device="", next_nodes=None, prev_nodes=None):
@@ -41,8 +56,119 @@ def build_visualization_task():
         raw_metadata={"buffer_size": 2, "resolution": "1080p"},
         file_path="sample.mp4",
     )
-    task.get_service("detector").set_content_data([([[1, 1, 5, 5]], [0.9])])
-    task.get_service("classifier").set_content_data([(["car"], [0.9])])
+    task.get_service("detector").set_content_data({
+        "service": "detector",
+        "outputs": {"bbox": [{"frame_index": 0, "items": [{"bbox": [1, 1, 5, 5], "score": 0.9, "label": "car", "object_id": 1}]}]},
+        "profile": content_profile(),
+    })
+    task.get_service("classifier").set_content_data({
+        "service": "classifier",
+        "outputs": {"text": [{"frame_index": 0, "items": [{"text": "car", "source_object_id": 1, "bbox": [1, 1, 5, 5]}]}]},
+        "profile": content_profile(),
+    })
+    return task
+
+
+def build_service_overlay_task():
+    service_names = [
+        "traffic-detection",
+        "road-context-segmentation",
+        "traffic-signal-recognition",
+        "vehicle-tracking",
+        "vehicle-attribute-recognition",
+        "vehicle-trajectory-prediction",
+        "pedestrian-pose-estimation",
+        "pedestrian-intent-recognition",
+        "risk-graph-generation",
+    ]
+    dag_dict = {}
+    for index, service_name in enumerate(service_names):
+        next_nodes = [service_names[index + 1]] if index + 1 < len(service_names) else []
+        dag_dict[service_name] = service_entry(service_name, execute_device="edge-a", next_nodes=next_nodes)
+    dag = Task.extract_dag_from_dict(dag_dict)
+    task = Task(
+        source_id=1,
+        task_id=99,
+        source_device="edge-a",
+        all_edge_devices=["edge-a", "edge-b"],
+        dag=dag,
+        file_path="sample.mp4",
+    )
+
+    task.get_service("traffic-detection").set_content_data({
+        "service": "traffic-detection",
+        "outputs": {"bbox": [{"frame_index": 0, "items": [
+            {"bbox": [10, 20, 42, 60], "label": "car", "score": 0.91, "object_id": "car-1"},
+            {"bbox": [70, 18, 78, 68], "label": "pedestrian", "score": 0.88, "object_id": "person-1"},
+        ]}]},
+        "profile": content_profile(),
+    })
+    task.get_service("road-context-segmentation").set_content_data({
+        "service": "road-context-segmentation",
+        "outputs": {"segmentation": [{"frame_index": 0, "items": [
+            {"type": "lane_polyline", "points": [[20, 78], [46, 44], [56, 24]]},
+            {"type": "drivable_area", "polygon": [[0, 79], [36, 34], [84, 34], [119, 79]]},
+            {"type": "crosswalk_region", "polygon": [[20, 52], [92, 52], [100, 62], [16, 62]]},
+        ]}]},
+        "profile": content_profile(),
+    })
+    task.get_service("traffic-signal-recognition").set_content_data({
+        "service": "traffic-signal-recognition",
+        "outputs": {"text": [{"frame_index": 0, "items": [
+            {"bbox": [52, 8, 62, 24], "state": "red", "text": "red", "score": 0.83},
+        ]}]},
+        "profile": content_profile(),
+    })
+    task.get_service("vehicle-tracking").set_content_data({
+        "service": "vehicle-tracking",
+        "outputs": {"track": [{"frame_index": None, "items": [
+            {"track_id": "vehicle-1", "bboxes": [[10, 22, 40, 60], [16, 22, 46, 60]], "frames": [0, 1],
+             "direction": "eastbound", "speed_px_per_s": 6.2, "source_object_id": "car-1"},
+        ]}]},
+        "profile": content_profile(),
+    })
+    task.get_service("vehicle-attribute-recognition").set_content_data({
+        "service": "vehicle-attribute-recognition",
+        "outputs": {"attribute": [{"frame_index": None, "items": [
+            {"bbox": [16, 22, 46, 60], "source_object_id": "car-1", "confidence": 0.87,
+             "attributes": {"type": "car", "color": "blue", "orientation": "side"}},
+        ]}]},
+        "profile": content_profile(),
+    })
+    task.get_service("vehicle-trajectory-prediction").set_content_data({
+        "service": "vehicle-trajectory-prediction",
+        "outputs": {"trajectory": [{"frame_index": None, "items": [
+            {"track_id": "vehicle-1", "vehicle_type": "car", "abnormal_stop_prob": 0.08,
+             "future_trajectories": [{"prob": 0.72, "points": [[50, 42, 0.5], [58, 42, 1.0], [66, 42, 1.5]]}]},
+        ]}]},
+        "profile": content_profile(),
+    })
+    task.get_service("pedestrian-pose-estimation").set_content_data({
+        "service": "pedestrian-pose-estimation",
+        "outputs": {"pose": [{"frame_index": 0, "items": [
+            {"person_id": "person-1", "bbox": [70, 18, 78, 68], "orientation": "toward-road",
+             "keypoints": [[74, 24, 0.9], [72, 36, 0.8], [76, 36, 0.8], [72, 62, 0.8], [76, 62, 0.8]]},
+        ]}]},
+        "profile": content_profile(),
+    })
+    task.get_service("pedestrian-intent-recognition").set_content_data({
+        "service": "pedestrian-intent-recognition",
+        "outputs": {"text": [{"frame_index": None, "items": [
+            {"person_id": "person-1", "intent": "likely_to_cross", "text": "likely_to_cross", "confidence": 0.82},
+        ]}]},
+        "profile": content_profile(),
+    })
+    task.get_service("risk-graph-generation").set_content_data({
+        "service": "risk-graph-generation",
+        "outputs": {"graph": [{"frame_index": None, "items": [
+            {"nodes": [{"id": "vehicle-1"}, {"id": "person-1"}],
+             "edges": [{"source": "vehicle-1", "target": "person-1"}],
+             "events": [{"type": "near_miss", "risk_score": 0.88}],
+             "summary": {"entity_count": 2, "relation_count": 1, "signal_count": 1},
+             "risk_level": "high", "risk_confidence": 0.88},
+        ]}]},
+        "profile": content_profile(),
+    })
     return task
 
 
@@ -303,3 +429,128 @@ def test_multiple_roi_visualizer_uses_default_image_when_rendering_fails(monkeyp
     assert visualizer(task) == {"multi": "fallback"}
     assert len(warnings) == 1
     assert exceptions == ["multi render failed"]
+
+
+@pytest.mark.unit
+def test_driving_perception_visualization_config_uses_registered_hooks():
+    config = YamlOps.read_yaml("config/visualization_configs/driving_perception_visualization_config.yaml")
+    expected_services = {
+        "traffic-detection",
+        "road-context-segmentation",
+        "traffic-signal-recognition",
+        "vehicle-tracking",
+        "vehicle-attribute-recognition",
+        "vehicle-trajectory-prediction",
+        "pedestrian-pose-estimation",
+        "pedestrian-intent-recognition",
+        "risk-graph-generation",
+    }
+    image_services = set()
+
+    for visualization in config:
+        assert isinstance(visualization["variables"], list)
+        assert ClassFactory.is_exists(ClassType.RESULT_VISUALIZER, visualization["hook_name"])
+        hook_params = visualization.get("hook_params")
+        if hook_params:
+            hook_params = ast.literal_eval(hook_params)
+            assert isinstance(hook_params, dict)
+            service = hook_params.get("service")
+            if visualization["type"] == "image" and service in expected_services:
+                image_services.add(service)
+
+    assert image_services == expected_services
+
+
+@pytest.mark.unit
+def test_service_frame_visualizers_render_structured_outputs(monkeypatch):
+    task = build_service_overlay_task()
+    encoded_sums = []
+
+    def fake_encode(image):
+        encoded_sums.append(int(image.sum()))
+        return f"encoded-{len(encoded_sums)}"
+
+    for module in (
+        bbox_frame_visualizer_module,
+        event_frame_visualizer_module,
+        pose_frame_visualizer_module,
+        segmentation_frame_visualizer_module,
+        text_frame_visualizer_module,
+        track_frame_visualizer_module,
+        trajectory_frame_visualizer_module,
+    ):
+        monkeypatch.setattr(module.EncodeOps, "encode_image", staticmethod(fake_encode))
+
+    monkeypatch.setattr(
+        image_visualizer_module.ImageVisualizer,
+        "get_frame_from_video",
+        staticmethod(lambda path, frame_index=0: np.zeros((80, 120, 3), dtype=np.uint8)),
+    )
+
+    visualizers = [
+        bbox_frame_visualizer_module.BBoxFrameVisualizer(
+            variables=["image"],
+            service="traffic-detection",
+            output="bbox",
+            label_fields=["label", "score"],
+        ),
+        segmentation_frame_visualizer_module.SegmentationFrameVisualizer(
+            variables=["image"],
+            service="road-context-segmentation",
+            output="segmentation",
+        ),
+        bbox_frame_visualizer_module.BBoxFrameVisualizer(
+            variables=["image"],
+            service="traffic-signal-recognition",
+            output="text",
+            label_fields=["state", "score"],
+        ),
+        track_frame_visualizer_module.TrackFrameVisualizer(
+            variables=["image"],
+            service="vehicle-tracking",
+            output="track",
+        ),
+        bbox_frame_visualizer_module.BBoxFrameVisualizer(
+            variables=["image"],
+            service="vehicle-attribute-recognition",
+            output="attribute",
+            label_template="{attributes.type}/{attributes.color}/{attributes.orientation} {confidence}",
+            label_fields=["attributes.type", "attributes.color", "attributes.orientation", "confidence"],
+        ),
+        trajectory_frame_visualizer_module.TrajectoryFrameVisualizer(
+            variables=["image"],
+            service="vehicle-trajectory-prediction",
+            output="trajectory",
+            track_service="vehicle-tracking",
+        ),
+        pose_frame_visualizer_module.PoseFrameVisualizer(
+            variables=["image"],
+            service="pedestrian-pose-estimation",
+            output="pose",
+        ),
+        text_frame_visualizer_module.TextFrameVisualizer(
+            variables=["image"],
+            service="pedestrian-intent-recognition",
+            output="text",
+            label_fields=["intent", "confidence"],
+            anchor_service="pedestrian-pose-estimation",
+            anchor_output="pose",
+            anchor_key="person_id",
+        ),
+        event_frame_visualizer_module.EventFrameVisualizer(
+            variables=["image"],
+            service="risk-graph-generation",
+            output="graph",
+        ),
+        bbox_frame_visualizer_module.BBoxFrameVisualizer(
+            variables=["image"],
+            service="traffic-detection",
+            output="missing",
+        ),
+    ]
+
+    for index, visualizer in enumerate(visualizers, start=1):
+        assert visualizer(task) == {"image": f"encoded-{index}"}
+
+    assert len(encoded_sums) == len(visualizers)
+    assert all(encoded_sum > 0 for encoded_sum in encoded_sums)

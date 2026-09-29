@@ -1,0 +1,36 @@
+position: edge
+pod-template:
+  image: generator
+  imagePullPolicy: Always
+  env:
+    - name: GEN_FILTER_NAME
+      value: simple
+    - name: GEN_GETTER_FILTER_NAME
+      value: simple
+    - name: GEN_PROCESS_NAME
+      value: simple
+    - name: GEN_COMPRESS_NAME
+      value: simple
+    - name: GEN_BSO_NAME
+      value: simple
+    - name: GEN_BSTO_NAME
+      value: simple
+    - name: GEN_ASO_NAME
+      value: simple
+    # Request one scheduling decision per task.
+    - name: REQUEST_SCHEDULING_INTERVAL
+      value: "0"
+    # Reshape HTTP arrivals into eight-task bursts without changing average FPS.
+    - name: HTTP_VIDEO_TASK_ARRIVAL_BURST
+      value: >
+        {
+          'tasks_per_burst': 8,
+          'intra_burst_rate_multiplier': 3.0
+        }
+    # Preserve the offered cadence with a bounded upload queue.
+    - name: ASYNC_TASK_SUBMISSION
+      value: "true"
+    - name: TASK_SUBMISSION_WORKERS
+      value: "8"
+    - name: TASK_SUBMISSION_QUEUE_DEPTH
+      value: "16"

@@ -3,6 +3,7 @@ import random
 
 from .base_initial_deployment_policy import BaseInitialDeploymentPolicy
 
+from core.lib.scheduling.deployment_plan import dag_services, validate_plan
 from core.lib.common import ClassFactory, ClassType, LOGGER
 
 __all__ = ('RandomInitialDeploymentPolicy',)
@@ -15,15 +16,14 @@ class RandomInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
 
     def __call__(self, info):
         source_id = info['source']['id']
-        dag = info['dag']
         node_set = info['node_set']
 
-        all_services = list(dag.keys())
-        deploy_plan = {node: [] for node in node_set}
+        all_services = dag_services(info)
+        node_services = {node: [] for node in node_set}
 
         for service in all_services:
             if self.max_service_num != -1:
-                available_nodes = [n for n in node_set if len(deploy_plan[n]) < self.max_service_num]
+                available_nodes = [n for n in node_set if len(node_services[n]) < self.max_service_num]
                 if not available_nodes:
                     LOGGER.warning(f"[Initial Deployment] (source {source_id}) Service '{service}' cannot be deployed，"
                                    f"please check max_service_num (current:{self.max_service_num}) "
@@ -32,10 +32,10 @@ class RandomInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
                 node = random.choice(available_nodes)
             else:
                 node = random.choice(list(node_set))
-            deploy_plan[node].append(service)
+            node_services[node].append(service)
 
         for node in node_set:
-            current_services = deploy_plan[node]
+            current_services = node_services[node]
             candidates = list(set(all_services) - set(current_services))
 
             if self.max_service_num != -1:
@@ -45,8 +45,15 @@ class RandomInitialDeploymentPolicy(BaseInitialDeploymentPolicy, abc.ABC):
                 add_num = random.randint(0, len(candidates))
 
             if add_num > 0:
-                deploy_plan[node].extend(random.sample(candidates, add_num))
+                node_services[node].extend(random.sample(candidates, add_num))
+
+        # Keep capacity accounting node-oriented internally, but expose the
+        # same service -> [nodes] contract as every other deployment policy.
+        deploy_plan = {
+            service: [node for node in node_set if service in node_services[node]]
+            for service in all_services
+        }
 
         LOGGER.info(f'[Initial Deployment] (source {source_id}) Deploy policy: {deploy_plan}')
 
-        return deploy_plan
+        return validate_plan(deploy_plan, info)

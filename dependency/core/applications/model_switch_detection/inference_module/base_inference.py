@@ -4,8 +4,7 @@ from .stats_manager import StatsManager, StatsEntry
 import cv2
 import time
 
-from core.lib.network import get_merge_address, http_request
-from core.lib.network import NodeInfo, PortInfo
+from core.lib.network import merge_address, http_request
 from core.lib.network import NetworkAPIPath, NetworkAPIMethod
 from core.lib.common import Context
 
@@ -66,13 +65,19 @@ class BaseInference(ABC):
         pass
 
     def get_queue(self):
-        self.local_device = NodeInfo.get_local_device()
+        # The queue belongs to the current processor process.  Address it over
+        # loopback instead of rediscovering the same pod through Kubernetes.
         self.processor_port = Context.get_parameter('GUNICORN_PORT')
-        queue_url = get_merge_address('127.0.0.1',
-                                        port=self.processor_port,
-                                        path=NetworkAPIPath.PROCESSOR_QUEUE_LENGTH) 
-        result = http_request(url=queue_url, method=NetworkAPIMethod.PROCESSOR_QUEUE_LENGTH, timeout=5)
-        return result
+        queue_url = merge_address('127.0.0.1',
+                                  port=self.processor_port,
+                                  path=NetworkAPIPath.PROCESSOR_QUEUE_STATE)
+        result = http_request(url=queue_url, method=NetworkAPIMethod.PROCESSOR_QUEUE_STATE, timeout=5)
+        if not isinstance(result, dict):
+            return 0
+        try:
+            return max(0, int(result.get('waiting_count', 0)))
+        except (TypeError, ValueError):
+            return 0
 
     @abstractmethod
     def prepare_update_stats(self, image: np.ndarray, boxes, scores, labels, inference_latency):

@@ -1,0 +1,83 @@
+{
+  "format": "dayu.application-dag",
+  "version": 1,
+  "dag_name": "driving vehicle risk perception",
+  "dag": {
+    "_start": [
+      "traffic-detection",
+      "road-context-segmentation"
+    ],
+    "traffic-detection": {
+      "id": "traffic-detection",
+      "prev": [],
+      "succ": [
+        "vehicle-tracking",
+        "vehicle-attribute-recognition"
+      ],
+      "service_id": "traffic-detection"
+    },
+    "road-context-segmentation": {
+      "id": "road-context-segmentation",
+      "prev": [],
+      "succ": [
+        "vehicle-trajectory-prediction"
+      ],
+      "service_id": "road-context-segmentation"
+    },
+    "vehicle-tracking": {
+      "id": "vehicle-tracking",
+      "prev": [
+        "traffic-detection"
+      ],
+      "succ": [
+        "vehicle-trajectory-prediction"
+      ],
+      "service_id": "vehicle-tracking"
+    },
+    "vehicle-attribute-recognition": {
+      "id": "vehicle-attribute-recognition",
+      "prev": [
+        "traffic-detection"
+      ],
+      "succ": [
+        "vehicle-trajectory-prediction"
+      ],
+      "service_id": "vehicle-attribute-recognition"
+    },
+    "vehicle-trajectory-prediction": {
+      "id": "vehicle-trajectory-prediction",
+      "prev": [
+        "road-context-segmentation",
+        "vehicle-tracking",
+        "vehicle-attribute-recognition"
+      ],
+      "succ": [],
+      "service_id": "vehicle-trajectory-prediction"
+    }
+  },
+  "layout": {
+    "direction": "LR",
+    "nodes": {
+      "traffic-detection": {
+        "x": 0,
+        "y": 100
+      },
+      "road-context-segmentation": {
+        "x": 0,
+        "y": 300
+      },
+      "vehicle-tracking": {
+        "x": 280,
+        "y": 40
+      },
+      "vehicle-attribute-recognition": {
+        "x": 280,
+        "y": 180
+      },
+      "vehicle-trajectory-prediction": {
+        "x": 600,
+        "y": 180
+      }
+    }
+  }
+}

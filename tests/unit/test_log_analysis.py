@@ -243,6 +243,30 @@ def test_summarize_tasks_rolls_up_devices_and_service_timings():
     }
 
 
+def test_summarize_tasks_uses_task_timestamps_instead_of_service_sum():
+    task = _task_record(
+        3,
+        "camera-a",
+        [
+            ("branch-a", "edge-a", 0.0, 1.0, 0.8),
+            ("branch-b", "edge-b", 0.0, 1.0, 0.8),
+        ],
+    )
+    task["tmp_data"] = {
+        "dayu:test:total_start_time": 10.0,
+        "dayu:test:total_end_time": 11.25,
+    }
+
+    summary = log_analysis.summarize_tasks([task], slo_target_seconds=1.5)
+
+    assert summary["average_task_latency"] == pytest.approx(1.25)
+    assert summary["task_latency_seconds"]["slo_compliance_rate"] == 1.0
+    detail = log_analysis.build_task_details([task])[0]["analysis"]
+    assert detail["task_latency_seconds"] == pytest.approx(1.25)
+    assert detail["task_latency_source"] == "task_timestamps"
+    assert detail["service_sum_seconds"] == pytest.approx(2.0)
+
+
 @pytest.mark.unit
 def test_main_supports_json_output(tmp_path, capsys):
     log_file = tmp_path / "sample-log.json"

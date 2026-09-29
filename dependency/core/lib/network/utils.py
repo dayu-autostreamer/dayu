@@ -2,6 +2,30 @@ import re
 from typing import Union
 
 
+_KUBERNETES_SERVICE_DNS_SUFFIX = ".svc.cluster.local"
+
+
+def connection_host(host: str) -> str:
+    """Return a connection-safe host without changing endpoint identity.
+
+    Kubernetes Pods commonly inherit ``ndots:5``. A service name such as
+    ``scheduler.ns.svc.cluster.local`` has only four dots and may therefore be
+    tried against every DNS search suffix before its absolute lookup. A
+    trailing dot makes the name absolute at the network boundary.
+
+    IP addresses, localhost and external DNS names are deliberately left
+    untouched. The function is idempotent so callers may safely apply it at
+    every connection boundary.
+    """
+
+    value = str(host or "").strip()
+    if not value or value.endswith("."):
+        return value
+    if value.lower().endswith(_KUBERNETES_SERVICE_DNS_SUFFIX):
+        return f"{value}."
+    return value
+
+
 def merge_address(ip: str, protocol: str = 'http', port: Union[int, str] = None, path: str = None):
     """
     merge address from {protocol, ip, port, path}

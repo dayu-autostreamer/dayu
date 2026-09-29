@@ -14,12 +14,7 @@ pod-template:
           'profile':'deployment_benchmark',
           'overrides':{
             'device':'cuda:1',
-            'timing':{
-              'deployment_interval_s': 60.0,
-              'offloading_interval_s': 1.0
-            },
             'latency_guard':{
-              'enabled': True,
               'latency_threshold_s': 8.0,
               'window_size':12,
               'min_samples':5,

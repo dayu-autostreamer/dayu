@@ -47,6 +47,34 @@ class ImageVisualizer(BaseVisualizer, abc.ABC):
         return frame
 
     @staticmethod
+    def get_frame_from_video(video_path, frame_index=0):
+        import cv2
+
+        if not isinstance(video_path, str) or not video_path:
+            raise ValueError("The video path must be a valid, non-empty string.")
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"Failed to open video file: {video_path}")
+
+        try:
+            if frame_index == 'last':
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                target_index = max(0, frame_count - 1)
+            else:
+                target_index = max(0, int(frame_index))
+            if target_index > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target_index)
+            success, frame = cap.read()
+        finally:
+            cap.release()
+
+        if not success:
+            raise ValueError(f"Failed to read frame {frame_index} from the video.")
+
+        return frame
+
+    @staticmethod
     def draw_bboxes(frame, bboxes):
         """
         Draws bounding boxes on an image frame.
@@ -162,3 +190,243 @@ class ImageVisualizer(BaseVisualizer, abc.ABC):
                         text_color, font_thickness, cv2.LINE_AA)
 
         return frame
+
+    @staticmethod
+    def extract_bboxes(content, frame_index=0):
+        return [
+            item.get('bbox')
+            for item in ImageVisualizer.extract_items(content, 'bbox', frame_index)
+            if isinstance(item, dict) and len(item.get('bbox') or []) == 4
+        ]
+
+    @staticmethod
+    def extract_texts(content, frame_index=0):
+        return [
+            str(item.get('text', item.get('label', '')))
+            for item in ImageVisualizer.extract_items(content, 'text', frame_index)
+        ]
+
+    @staticmethod
+    def extract_records(content, label):
+        if not isinstance(content, dict):
+            return []
+        outputs = content.get('outputs')
+        if not isinstance(outputs, dict):
+            return []
+        records = outputs.get(label) or []
+        return [record for record in records if isinstance(record, dict)]
+
+    @staticmethod
+    def extract_items(content, label, frame_index=0, include_global=True):
+        records = ImageVisualizer.extract_records(content, label)
+        if frame_index == 'last':
+            frame_indices = [
+                record.get('frame_index') for record in records
+                if isinstance(record.get('frame_index'), int)
+            ]
+            if frame_indices:
+                frame_index = max(frame_indices)
+        selected = [
+            record for record in records
+            if record.get('frame_index') == frame_index
+            or (include_global and record.get('frame_index') is None)
+        ]
+        if not selected and records:
+            selected = records[:1]
+        items = []
+        for record in selected:
+            items.extend(record.get('items') or [])
+        return items
+
+    @staticmethod
+    def get_nested_value(item, field):
+        value = item
+        for part in str(field).split('.'):
+            if not isinstance(value, dict) or part not in value:
+                return None
+            value = value[part]
+        return value
+
+    @staticmethod
+    def format_label_value(value):
+        if isinstance(value, float):
+            return f'{value:.2f}'
+        return str(value)
+
+    @staticmethod
+    def item_label(item, fields=None, template=None, fallback_fields=None):
+        if not isinstance(item, dict):
+            return ''
+
+        if template:
+            label = str(template)
+            for field in fields or []:
+                value = ImageVisualizer.get_nested_value(item, field)
+                label = label.replace('{' + str(field) + '}', '' if value is None else ImageVisualizer.format_label_value(value))
+            return label
+
+        label_parts = []
+        candidate_fields = fields or fallback_fields or [
+            'text',
+            'label',
+            'category',
+            'state',
+            'intent',
+            'track_id',
+            'person_id',
+        ]
+        for field in candidate_fields:
+            value = ImageVisualizer.get_nested_value(item, field)
+            if value is not None and value != '':
+                label_parts.append(ImageVisualizer.format_label_value(value))
+
+        if not fields:
+            for score_field in ('score', 'confidence', 'prob', 'risk_score', 'abnormal_stop_prob'):
+                value = ImageVisualizer.get_nested_value(item, score_field)
+                if isinstance(value, (int, float)):
+                    label_parts.append(f'{score_field}:{float(value):.2f}')
+                    break
+
+        return ' '.join(label_parts)
+
+    @staticmethod
+    def clip_bbox(frame, bbox):
+        if not isinstance(bbox, (tuple, list)) or len(bbox) != 4:
+            return None
+        try:
+            x_min, y_min, x_max, y_max = [int(round(float(value))) for value in bbox]
+        except (TypeError, ValueError):
+            return None
+        height, width = frame.shape[:2]
+        x_min = max(0, min(width - 1, x_min))
+        x_max = max(0, min(width, x_max))
+        y_min = max(0, min(height - 1, y_min))
+        y_max = max(0, min(height, y_max))
+        if x_max <= x_min or y_max <= y_min:
+            return None
+        return [x_min, y_min, x_max, y_max]
+
+    @staticmethod
+    def _point(value):
+        if not isinstance(value, (tuple, list)) or len(value) < 2:
+            return None
+        try:
+            return int(round(float(value[0]))), int(round(float(value[1])))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def draw_text(frame, text, origin, color=(255, 255, 255), background=(15, 23, 42), font_scale=0.48):
+        import cv2
+
+        if not text:
+            return frame
+        x, y = origin
+        height, width = frame.shape[:2]
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        thickness = 1
+        (text_w, text_h), baseline = cv2.getTextSize(str(text), font, font_scale, thickness)
+        x = max(0, min(int(x), max(width - text_w - 4, 0)))
+        y = max(text_h + 4, min(int(y), height - baseline - 2))
+        cv2.rectangle(frame, (x, y - text_h - 4), (x + text_w + 6, y + baseline + 2), background, -1)
+        cv2.putText(frame, str(text), (x + 3, y), font, font_scale, color, thickness, cv2.LINE_AA)
+        return frame
+
+    @staticmethod
+    def draw_safe_bbox(frame, bbox, label='', color=(0, 255, 0), thickness=2):
+        import cv2
+
+        clipped = ImageVisualizer.clip_bbox(frame, bbox)
+        if not clipped:
+            return frame
+        x_min, y_min, x_max, y_max = clipped
+        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), color, thickness)
+        if label:
+            ImageVisualizer.draw_text(frame, label, (x_min, y_min - 6), color=(255, 255, 255), background=color)
+        return frame
+
+    @staticmethod
+    def draw_polyline(frame, points, color=(255, 255, 0), thickness=2, closed=False):
+        import cv2
+        import numpy as np
+
+        valid_points = [ImageVisualizer._point(point) for point in points or []]
+        valid_points = [point for point in valid_points if point is not None]
+        if len(valid_points) < 2:
+            return frame
+        array = np.array(valid_points, dtype=np.int32).reshape((-1, 1, 2))
+        cv2.polylines(frame, [array], bool(closed), color, thickness, cv2.LINE_AA)
+        return frame
+
+    @staticmethod
+    def draw_polygon(frame, points, color=(0, 180, 255), alpha=0.28, outline_thickness=2):
+        import cv2
+        import numpy as np
+
+        valid_points = [ImageVisualizer._point(point) for point in points or []]
+        valid_points = [point for point in valid_points if point is not None]
+        if len(valid_points) < 3:
+            return frame
+        array = np.array(valid_points, dtype=np.int32).reshape((-1, 1, 2))
+        overlay = frame.copy()
+        cv2.fillPoly(overlay, [array], color)
+        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+        cv2.polylines(frame, [array], True, color, outline_thickness, cv2.LINE_AA)
+        return frame
+
+    @staticmethod
+    def draw_keypoints(frame, keypoints, color=(255, 0, 255), links=None):
+        import cv2
+
+        points = []
+        for keypoint in keypoints or []:
+            if not isinstance(keypoint, (tuple, list)):
+                points.append(None)
+                continue
+            if len(keypoint) >= 3:
+                try:
+                    if float(keypoint[2]) <= 0:
+                        points.append(None)
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            points.append(ImageVisualizer._point(keypoint))
+
+        if links:
+            for first, second in links:
+                if first < len(points) and second < len(points) and points[first] and points[second]:
+                    cv2.line(frame, points[first], points[second], color, 2, cv2.LINE_AA)
+        for point in points:
+            if point:
+                cv2.circle(frame, point, 4, color, -1, cv2.LINE_AA)
+        return frame
+
+    @staticmethod
+    def draw_panel(frame, title, lines, origin=(12, 28), color=(30, 64, 175)):
+        import cv2
+
+        lines = [str(line) for line in lines if line is not None and str(line) != '']
+        text_lines = [str(title)] + lines[:8]
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        thickness = 1
+        sizes = [cv2.getTextSize(line, font, font_scale, thickness)[0] for line in text_lines]
+        panel_w = max([size[0] for size in sizes] + [120]) + 18
+        panel_h = 24 + len(text_lines) * 20
+        x, y = origin
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x, max(0, y - 20)), (x + panel_w, y - 20 + panel_h), color, -1)
+        cv2.addWeighted(overlay, 0.72, frame, 0.28, 0, frame)
+        for index, line in enumerate(text_lines):
+            cv2.putText(frame, line, (x + 9, y + index * 20), font, font_scale,
+                        (255, 255, 255), thickness, cv2.LINE_AA)
+        return frame
+
+    @staticmethod
+    def draw_no_output(frame, service_name, output_label):
+        return ImageVisualizer.draw_panel(
+            frame,
+            'No output',
+            [f'service: {service_name}', f'output: {output_label}'],
+            color=(80, 80, 80),
+        )

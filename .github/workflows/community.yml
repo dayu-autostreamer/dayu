@@ -1,0 +1,34 @@
+name: Community
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: community-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  community-policy:
+    name: Community policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install community tooling dependency
+        run: python3 -m pip install --disable-pip-version-check -r .github/requirements/community.txt
+      - name: Check roster, ownership, and local links
+        run: python3 tools/validate_community.py
+      - name: Test community validation behavior
+        run: python3 -m unittest discover -s tests/unit -p test_validate_community.py
+      - name: Test ownership and review routing behavior
+        run: python3 -m unittest discover -s tests/unit -p 'test_owners*.py'

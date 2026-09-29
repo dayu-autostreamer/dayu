@@ -1,5 +1,4 @@
 import abc
-import multiprocessing
 import copy
 import os
 import time
@@ -7,6 +6,7 @@ import time
 from .base_getter import BaseDataGetter
 
 from core.lib.common import ClassFactory, ClassType, LOGGER, FileOps, Counter, NameMaintainer
+from core.lib.content import TaskIdentity
 
 __all__ = ('RtspVideoGetter',)
 
@@ -51,7 +51,6 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
         return cap
 
     def get_one_frame(self, system):
-        import cv2
         if not self.data_source_capture or not self.data_source_capture.isOpened():
             # (Re)open with FFMPEG backend and low-latency options
             self.data_source_capture = self._open_capture(system.video_data_source)
@@ -80,7 +79,16 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
 
         return frame
 
-    def generate_and_send_new_task(self, system, frame_buffer, new_task_id, task_dag, service_deployment, meta_data, ):
+    def generate_and_send_new_task(
+        self,
+        system,
+        frame_buffer,
+        new_task_id,
+        task_dag,
+        service_deployment,
+        meta_data,
+        task_identity=None,
+    ):
         source_id = system.source_id
 
         LOGGER.debug(f'[Frame Buffer] (source {system.source_id} / task {new_task_id}) '
@@ -91,29 +99,45 @@ class RtspVideoGetter(BaseDataGetter, abc.ABC):
             for frame in frame_buffer
         ]
         file_name = NameMaintainer.get_task_data_file_name(source_id, new_task_id, file_suffix=self.file_suffix)
-        self.compress_frames(system, frame_buffer, file_name)
 
-        new_task = system.generate_task(new_task_id, task_dag, service_deployment, meta_data, file_name, None)
-        system.submit_task_to_controller(new_task)
-        FileOps.remove_file(file_name)
+        try:
+            self.compress_frames(system, frame_buffer, file_name)
+            new_task = system.generate_task(
+                new_task_id,
+                task_dag,
+                service_deployment,
+                meta_data,
+                file_name,
+                None,
+                task_identity=task_identity,
+            )
+            return system.submit_task_to_controller(new_task)
+        finally:
+            FileOps.remove_file(file_name)
 
-    def __call__(self, system):
+    def __call__(self, system, task_identity=None):
         while len(self.frame_buffer) < system.meta_data['buffer_size']:
             frame = self.get_one_frame(system)
             if self.filter_frame(system, frame):
                 self.frame_buffer.append(frame)
 
-        # generate tasks in parallel to avoid getting stuck with video compression
-        new_task_id = Counter.get_count('task_id')
+        # Submission is deliberately serial: when the non-dropping data path
+        # applies backpressure, the source must not create unbounded child
+        # processes and continue consuming frames that have no owner.
+        if task_identity is None:
+            task_identity = TaskIdentity.create(system.source_id, Counter.get_count('task_id'))
+        new_task_id = task_identity.task_id
         system.cumulative_scheduling_frame_count += int(system.meta_data.get('buffer_size', 0) *
                                                      system.raw_meta_data.get('fps', 0) /
                                                      system.meta_data.get('fps', 1))
-        multiprocessing.Process(target=self.generate_and_send_new_task,
-                                args=(system,
-                                      self.frame_buffer,
-                                      new_task_id,
-                                      copy.deepcopy(system.task_dag),
-                                      copy.deepcopy(system.service_deployment),
-                                      copy.deepcopy(system.meta_data),)).start()
-
+        frame_buffer = self.frame_buffer
         self.frame_buffer = []
+        return self.generate_and_send_new_task(
+            system,
+            frame_buffer,
+            new_task_id,
+            copy.deepcopy(system.task_dag),
+            copy.deepcopy(system.service_deployment),
+            copy.deepcopy(system.meta_data),
+            task_identity=task_identity,
+        )

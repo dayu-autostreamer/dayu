@@ -29,20 +29,20 @@ declare interface RequestOldRoutesState {
 // TagsView 路由列表
 declare interface TagsViewRoutesState<T = any> {
 	tagsViewRoutes: T[];
-	isTagsViewCurrenFull: Boolean;
+	isTagsViewCurrenFull: boolean;
 }
 
 // 路由列表
 declare interface RoutesListState<T = any> {
 	routesList: T[];
-	isColumnsMenuHover: Boolean;
-	isColumnsNavHover: Boolean;
+	isColumnsMenuHover: boolean;
+	isColumnsNavHover: boolean;
 }
 
 // 布局配置
 declare interface ThemeConfigState {
 	themeConfig: {
-		ver: internal;
+		ver: number;
 		isDrawer: boolean;
 		primary: string;
 		topBar: string;

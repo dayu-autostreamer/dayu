@@ -1,0 +1,34 @@
+position: both
+pod-template:
+  image: vehicle-tracking
+  imagePullPolicy: Always
+  env:
+    - name: PROCESSOR_NAME
+      value: "structured_processor"
+    - name: STRUCTURED_PROCESSOR_PARAMETERS
+      value: >
+        {
+          'trt_weights':'vehicle_tracking.engine',
+          'trt_plugin_library':'libmyplugins.so',
+          'non_trt_weights':'vehicle_tracking.pt',
+          'device':0,
+          'high_score_threshold':0.35,
+          'low_score_threshold':0.10,
+          'new_track_threshold':0.35,
+          'match_score_threshold':0.35,
+          'secondary_iou_threshold':0.25,
+          'max_age':8
+        }
+    - name: SCENARIOS_EXTRACTORS
+      value: >
+        ['structured_profile']
+    - name: PRO_QUEUE_NAME
+      value: "simple"
+    - name: USE_TENSORRT
+      value: "False"
+port-open:
+  pos: both
+  port: 9000
+file-mount:
+  - pos: both
+    path: "processor/vehicle-tracking/"

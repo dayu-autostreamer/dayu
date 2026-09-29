@@ -1,16 +1,22 @@
 import asyncio
 import importlib
+import json
+from pathlib import Path
 import runpy
 import socket
 import sys
+import threading
 from types import SimpleNamespace
 
 from fastapi import BackgroundTasks
 import pytest
 
+from core.lib.common import FileNotMountedError
+
 
 @pytest.fixture
-def http_video_module():
+def http_video_module(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEMP_PATH", str(tmp_path))
     module = importlib.import_module("http_video")
     module.sources.clear()
     return module
@@ -32,6 +38,353 @@ def test_http_video_file_endpoint_registers_cleanup_task(monkeypatch, http_video
     assert len(background.tasks) == 1
     assert background.tasks[0].func is http_video_module.FileOps.remove_file
     assert background.tasks[0].args == (str(payload),)
+
+
+@pytest.mark.unit
+def test_http_video_requires_explicit_temporary_storage(
+    monkeypatch,
+    http_video_module,
+    tmp_path,
+):
+    monkeypatch.delenv("TEMP_PATH")
+    monkeypatch.setattr(
+        http_video_module,
+        "VideoDatasetPlayer",
+        lambda root, mode: SimpleNamespace(is_end=False),
+    )
+    source = http_video_module.VideoSource(str(tmp_path), "non-cycle")
+    source.source_id = 314159
+    source.task_id = 2718
+    source.meta_data = {"resolution": "720p"}
+    source.raw_meta_data = {"resolution": "1080p"}
+    source.frame_process = lambda system, frame, source_res, target_res: frame
+    source.frame_compress = lambda system, frames, file_name: Path(file_name).write_text(
+        frames[0],
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(source, "_configure_request", lambda data: None)
+    monkeypatch.setattr(source, "_select_frames", lambda: (["frame"], [1]))
+    cwd_artifact = Path.cwd() / "data_of_source_314159_task_2718.mp4"
+
+    assert not cwd_artifact.exists()
+    with pytest.raises(FileNotMountedError, match="Temporary directory is not mounted"):
+        source.get_source_data("{}")
+    assert not cwd_artifact.exists()
+
+
+@pytest.mark.unit
+def test_http_video_status_identifies_source_instance_and_exhaustion(
+    monkeypatch, http_video_module, tmp_path
+):
+    player = SimpleNamespace(is_end=False)
+    monkeypatch.setattr(
+        http_video_module,
+        "VideoDatasetPlayer",
+        lambda root, mode: player,
+    )
+
+    first = http_video_module.VideoSource(str(tmp_path), "non-cycle")
+    second = http_video_module.VideoSource(str(tmp_path), "non-cycle")
+
+    first_status = first.get_source_status()
+    second_status = second.get_source_status()
+    assert first_status == {
+        "instance_id": first.instance_id,
+        "exhausted": False,
+        "ready": True,
+    }
+    assert second_status["instance_id"] != first_status["instance_id"]
+
+    player.is_end = True
+    assert first.get_source_status() == {
+        "instance_id": first.instance_id,
+        "exhausted": True,
+        "ready": True,
+    }
+
+
+@pytest.mark.unit
+def test_http_video_on_demand_processing_preserves_segment_order(
+    monkeypatch, http_video_module, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    class Player:
+        def __init__(self):
+            self.frames = iter(
+                [
+                    ("frame-0", 100),
+                    ("frame-1", 101),
+                    ("frame-2", 102),
+                    (None, None),
+                ]
+            )
+            self.is_end = False
+
+        def read_frame(self):
+            frame, index = next(self.frames)
+            if frame is None:
+                self.is_end = True
+            return frame, index
+
+    monkeypatch.setattr(
+        http_video_module,
+        "VideoDatasetPlayer",
+        lambda root, mode: Player(),
+    )
+
+    def algorithm(kind, al_name=None):
+        if kind == "GEN_FILTER":
+            return lambda system, frame: True
+        if kind == "GEN_PROCESS":
+            return lambda system, frame, source, target: frame
+
+        def compress(system, frames, file_name):
+            Path(file_name).write_text(",".join(frames), encoding="utf-8")
+
+        return compress
+
+    monkeypatch.setattr(
+        http_video_module.Context,
+        "get_algorithm",
+        staticmethod(algorithm),
+    )
+    source = http_video_module.VideoSource(str(tmp_path), "non-cycle")
+
+    def request(task_id):
+        return json.dumps(
+            {
+                "source_id": 7,
+                "task_id": task_id,
+                "meta_data": {
+                    "buffer_size": 1,
+                    "resolution": "720p",
+                    "fps": 16,
+                    "encoding": "mp4v",
+                },
+                "raw_meta_data": {"resolution": "1080p", "fps": 30},
+                "gen_filter_name": "simple",
+                "gen_process_name": "simple",
+                "gen_compress_name": "simple",
+            }
+        )
+
+    observed = []
+    payloads = []
+    for task_id in (1, 2, 3):
+        response = source.get_source_data(request(task_id))
+        observed.append(json.loads(response.body))
+        payloads.append(Path(source.file_name).read_text(encoding="utf-8"))
+
+    exhausted = source.get_source_data(request(4))
+
+    assert observed == [[100], [101], [102]]
+    assert payloads == ["frame-0", "frame-1", "frame-2"]
+    assert json.loads(exhausted.body) == []
+    assert source.get_source_status()["exhausted"] is True
+    assert source.get_source_status()["ready"] is True
+
+
+@pytest.mark.unit
+def test_http_video_source_exhaustion_is_stable_and_side_effect_free(
+    monkeypatch,
+    http_video_module,
+    tmp_path,
+):
+    player = SimpleNamespace(is_end=True)
+    monkeypatch.setattr(
+        http_video_module,
+        "VideoDatasetPlayer",
+        lambda root, mode: player,
+    )
+    source = http_video_module.VideoSource(str(tmp_path), "non-cycle")
+    monkeypatch.setattr(
+        source,
+        "_configure_request",
+        lambda data: pytest.fail("an exhausted source must not consume a request"),
+    )
+
+    for task_id in (1, 2):
+        assert source.get_source_data(json.dumps({"task_id": task_id})) == []
+
+    assert source.get_source_status() == {
+        "instance_id": source.instance_id,
+        "exhausted": True,
+        "ready": True,
+    }
+
+
+@pytest.mark.unit
+def test_http_video_source_serializes_stateful_source_requests(
+    monkeypatch,
+    http_video_module,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        http_video_module,
+        "VideoDatasetPlayer",
+        lambda root, mode: SimpleNamespace(is_end=False),
+    )
+    source = http_video_module.VideoSource(str(tmp_path), "non-cycle")
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    second_entered = threading.Event()
+    events = []
+    responses = {}
+    generated_paths = []
+
+    def compress(system, frames, file_name):
+        events.append(("compress", system.task_id))
+        generated_paths.append(Path(file_name))
+        Path(file_name).write_text(frames[0], encoding="utf-8")
+
+    def configure(data):
+        task_id = int(data["task_id"])
+        events.append(("configure", task_id))
+        if task_id == 1:
+            first_entered.set()
+            release_first.wait(timeout=1.0)
+        else:
+            second_entered.set()
+        source.source_id = int(data["source_id"])
+        source.task_id = task_id
+        source.meta_data = dict(data["meta_data"])
+        source.raw_meta_data = dict(data["raw_meta_data"])
+        source.frame_process = lambda system, frame, source_res, target_res: frame
+        source.frame_compress = compress
+
+    def select_frames():
+        events.append(("select", source.task_id))
+        return [f"frame-{source.task_id}"], [source.task_id]
+
+    monkeypatch.setattr(source, "_configure_request", configure)
+    monkeypatch.setattr(source, "_select_frames", select_frames)
+
+    def request(task_id):
+        return json.dumps({
+            "source_id": 7,
+            "task_id": task_id,
+            "meta_data": {
+                "buffer_size": 1,
+                "resolution": "720p",
+            },
+            "raw_meta_data": {"resolution": "1080p"},
+        })
+
+    def call(task_id):
+        if task_id == 2:
+            second_started.set()
+        response = source.get_source_data(request(task_id))
+        responses[task_id] = json.loads(response.body)
+
+    first = threading.Thread(target=call, args=(1,))
+    second = threading.Thread(target=call, args=(2,))
+    first.start()
+    assert first_entered.wait(timeout=1.0)
+    second.start()
+    assert second_started.wait(timeout=1.0)
+    assert second_entered.wait(timeout=0.05) is False
+
+    release_first.set()
+    first.join(timeout=1.0)
+    second.join(timeout=1.0)
+
+    assert first.is_alive() is False
+    assert second.is_alive() is False
+    assert responses == {1: [1], 2: [2]}
+    assert events == [
+        ("configure", 1),
+        ("select", 1),
+        ("compress", 1),
+        ("configure", 2),
+        ("select", 2),
+        ("compress", 2),
+    ]
+    assert generated_paths == [
+        tmp_path / "data_of_source_7_task_1.mp4",
+        tmp_path / "data_of_source_7_task_2.mp4",
+    ]
+
+
+@pytest.mark.unit
+def test_http_video_applies_each_task_configuration_after_scheduling(
+    monkeypatch, http_video_module, tmp_path
+):
+    events = []
+    generated_paths = []
+
+    class Player:
+        def __init__(self):
+            self.index = 0
+            self.is_end = False
+
+        def read_frame(self):
+            if self.index >= 3:
+                self.is_end = True
+                return None, None
+            current = self.index
+            self.index += 1
+            events.append(("decode", current))
+            return f"frame-{current}", current
+
+    monkeypatch.setattr(
+        http_video_module,
+        "VideoDatasetPlayer",
+        lambda root, mode: Player(),
+    )
+
+    def algorithm(kind, al_name=None):
+        if kind == "GEN_FILTER":
+            return lambda system, frame: True
+        if kind == "GEN_PROCESS":
+            return lambda system, frame, source, target: (
+                events.append(("process", frame, target)) or frame
+            )
+
+        def compress(system, frames, file_name):
+            events.append(("encode", int(frames[0].split("-")[1])))
+            generated_paths.append(Path(file_name))
+            Path(file_name).write_text(frames[0], encoding="utf-8")
+
+        return compress
+
+    monkeypatch.setattr(
+        http_video_module.Context,
+        "get_algorithm",
+        staticmethod(algorithm),
+    )
+    source = http_video_module.VideoSource(str(tmp_path), "non-cycle")
+    def request(task_id, buffer_size, resolution):
+        return json.dumps({
+            "source_id": 9,
+            "task_id": task_id,
+            "meta_data": {
+                "buffer_size": buffer_size,
+                "resolution": resolution,
+                "fps": 16,
+                "encoding": "mp4v",
+            },
+            "raw_meta_data": {"resolution": "1080p", "fps": 30},
+            "gen_filter_name": "simple",
+            "gen_process_name": "simple",
+            "gen_compress_name": "simple",
+        })
+
+    first = source.get_source_data(request(1, 1, "720p"))
+    second = source.get_source_data(request(2, 2, "480p"))
+
+    assert json.loads(first.body) == [0]
+    assert json.loads(second.body) == [1, 2]
+    assert [event for event in events if event[0] == "process"] == [
+        ("process", "frame-0", "720p"),
+        ("process", "frame-1", "480p"),
+        ("process", "frame-2", "480p"),
+    ]
+    assert generated_paths == [
+        tmp_path / "data_of_source_9_task_1.mp4",
+        tmp_path / "data_of_source_9_task_2.mp4",
+    ]
+    assert source.get_source_status()["ready"] is True
 
 
 @pytest.mark.unit

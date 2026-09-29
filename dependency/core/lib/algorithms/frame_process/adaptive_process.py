@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from typing import List, Tuple
 
-from core.lib.common import ClassFactory, ClassType
+from core.lib.common import ClassFactory, ClassType, LOGGER
 from core.lib.common import VideoOps
 from .base_process import BaseProcess
 
@@ -15,16 +15,18 @@ class AdaptiveProcess(BaseProcess, abc.ABC):
     def __init__(self):
         super().__init__()
         self.backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)
-        self.roi_msg = []
-        self.cnt = 0 
 
-    def __call__(self, system, frame):
+    def __call__(self, system, frame, source_resolution, target_resolution):
+        fallback_frame = frame
         try:
-            resolution = VideoOps.text2resolution(system.meta_data['resolution'])
+            resolution = VideoOps.text2resolution(target_resolution)
             frame_resize = cv2.resize(frame, resolution)
+            fallback_frame = frame_resize
             frame_height, frame_width, _ = frame_resize.shape
 
-            fg_mask = self.extract_foreground_mask(frame)
+            # ROI coordinates must be measured in the same coordinate system
+            # as the frame later written by AdaptiveCompress.
+            fg_mask = self.extract_foreground_mask(frame_resize)
 
             fg_mask = self.apply_morphological_operations(fg_mask)
 
@@ -34,18 +36,13 @@ class AdaptiveProcess(BaseProcess, abc.ABC):
             contour_scores = self.calculate_contour_scores(filtered_contours, frame_resize)
             valid_rois = self.get_valid_rois(contour_scores, frame_width, frame_height)
 
-            roi_message = self.generate_roi_message(valid_rois)
-            self.roi_msg.append(roi_message)
-            self.cnt += 1
-
-            if len(self.roi_msg) == system.meta_data['buffer_size']:
-                self.generate_roi_file(system)
-                self.roi_msg = []
-
             return (frame_resize, valid_rois)
         except Exception as e:
-            print(f"Error processing frame: {e}")
-            return (frame, [])
+            LOGGER.warning(f"Adaptive frame processing failed: {e}")
+            # Keep every buffered frame at one resolution when ROI extraction
+            # fails after resize; AdaptiveCompress writes one fixed-size YUV
+            # sequence for the whole buffer.
+            return (fallback_frame, [])
 
     def extract_foreground_mask(self, frame: np.ndarray) -> np.ndarray:
         return self.backSub.apply(frame)
@@ -83,6 +80,8 @@ class AdaptiveProcess(BaseProcess, abc.ABC):
         ]
 
     def is_roi_valid(self, x1: int, y1: int, x2: int, y2: int, frame_width: int, frame_height: int) -> bool:
+        if frame_width <= 0 or frame_height <= 0:
+            return False
         return (x2 - x1) / frame_width <= 0.3 and (y2 - y1) / frame_height <= 0.3
 
     def generate_roi_message(self, rois: List[Tuple[int, int, int, int]]) -> str:
@@ -91,12 +90,3 @@ class AdaptiveProcess(BaseProcess, abc.ABC):
         for (x1, y1, x2, y2) in rois[:num_regions]:
             message += f"-10 {x1} {y1} {x2 - x1} {y2 - y1} "
         return message
-
-    def generate_roi_file(self, system):
-        source_id, task_id = system.source_id, system.task_id
-        roi_path = f'roi_{source_id}_task_{task_id}.txt'
-        try:
-            with open(roi_path, 'w') as f:
-                f.write("\n".join(self.roi_msg))
-        except IOError as e:
-            print(f"Error writing ROI file: {e}")

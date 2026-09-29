@@ -11,7 +11,7 @@ import os
 import glob
 import json
 
-from core.lib.common import LOGGER, FileOps, Context, Recorder, KubeConfig
+from core.lib.common import LOGGER, FileOps, Context, Recorder
 from core.lib.estimation import OverheadEstimator
 
 from .topology_encoder import TopologyEncoders
@@ -417,8 +417,6 @@ class Hedger:
         self._deployment_version_cond = threading.Condition(threading.Lock())
         self._deployment_decision_version = 0
         self._deployment_served_version = 0
-        self._last_processor_pod_cleanup_t = 0.0
-        self._processor_pod_cleanup_cooldown_s = 30.0
         self._run_thread = None
         self._run_started = False
 
@@ -4655,14 +4653,6 @@ class Hedger:
 
         assert self.shared_topology_encoder, 'Shared topology encoder must be registered before deployment agent.'
 
-        if self.deployment_agent_params.get("update_encoder", False):
-            LOGGER.warning(
-                "[Hedger][Train] Deployment-side encoder updates are disabled. "
-                "The shared topology encoder is owned by the offloading side to avoid "
-                "dual-optimizer instability on shared parameters."
-            )
-        self.deployment_agent_params["update_encoder"] = False
-
         self.deployment_agent = HedgerDeploymentPPO(
             encoder=self.shared_topology_encoder,
             d_model=self.encoder_cfg.embedding_dim,
@@ -4671,7 +4661,7 @@ class Hedger:
             gamma=self.deployment_agent_params['gamma'],
             lamda=self.deployment_agent_params['lamda'],
             clip_eps=self.deployment_agent_params['clip_eps'],
-            update_encoder=False,
+            update_encoder=self.deployment_agent_params['update_encoder'],
             cloud_node_idx=self.physical_topology.cloud_idx if self.physical_topology is not None else -1,
             constraint_cfg=from_partial_dict(DeploymentConstraintCfg, self.deployment_agent_params),
         ).to(self.device)
@@ -7203,28 +7193,6 @@ class Hedger:
 
         return False
 
-    def _delete_error_processor_pods_if_needed(self, reason: str) -> int:
-        now = time.monotonic()
-        if now - self._last_processor_pod_cleanup_t < self._processor_pod_cleanup_cooldown_s:
-            return 0
-
-        self._last_processor_pod_cleanup_t = now
-        try:
-            deleted = KubeConfig.delete_error_processor_pods(max_deletions=10)
-        except Exception as exc:
-            LOGGER.warning(
-                f"[Hedger][Recovery] Failed to delete error processor pods while {reason}: {exc}"
-            )
-            return 0
-
-        deleted_count = sum(1 for item in deleted if item.get("deleted"))
-        if deleted_count > 0:
-            LOGGER.warning(
-                f"[Hedger][Recovery] Deleted error processor pods while {reason}: "
-                f"count={deleted_count}"
-            )
-        return deleted_count
-
     def _deployment_feedback_min_samples(self) -> int:
         return max(
             1,
@@ -7290,9 +7258,6 @@ class Hedger:
                     ok=False,
                     count=self._deployment_feedback_count(deployment_version),
                 )
-            self._delete_error_processor_pods_if_needed(
-                reason=f"waiting for deployment feedback samples={min_samples}"
-            )
             wait_timeout_s = 5.0
             if timeout_s is not None:
                 wait_timeout_s = min(5.0, max(0.5, float(timeout_s)))
@@ -10529,6 +10494,8 @@ class Hedger:
             "device_concentration_coef": cfg.device_concentration_coef,
             "device_count_over_budget_coef": cfg.device_count_over_budget_coef,
             "alternative_option_margin_coef": cfg.alternative_option_margin_coef,
+            "projection_edge_coverage_coef": cfg.projection_edge_coverage_coef,
+            "last_edge_removed_coef": cfg.last_edge_removed_coef,
             "soft_target_bc_coef": cfg.soft_target_bc_coef,
             "positive_logit_margin": cfg.positive_logit_margin,
             "negative_logit_margin": cfg.negative_logit_margin,

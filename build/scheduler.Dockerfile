@@ -1,5 +1,6 @@
 ARG REG=docker.io
-FROM ${REG}/dayuhub/dayubase:latest
+ARG BASE_REPO=dayuhub
+FROM ${REG}/${BASE_REPO}/dayubase:latest
 
 LABEL authors="Wenhui Zhou"
 
@@ -25,4 +26,4 @@ ENV PYTHONPATH="/home/dependency"
 WORKDIR /app
 COPY  ${code_dir}/* /app/
 
-CMD ["python3", "-m", "gunicorn", "main:app", "-c", "./gunicorn.conf.py"]
+CMD ["python3", "main.py"]

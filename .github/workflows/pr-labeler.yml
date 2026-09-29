@@ -1,0 +1,27 @@
+name: PR labels
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    if: github.repository == 'dayu-autostreamer/dayu'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # No checkout or PR code execution with this write-capable token. The action
+      # loads configuration from the trusted base repository via the GitHub API.
+      - name: Apply path labels
+        uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+        with:
+          sync-labels: false

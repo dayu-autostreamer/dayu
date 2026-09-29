@@ -1,6 +1,5 @@
 import abc
-from core.lib.common import ClassFactory, ClassType, SystemConstant
-from core.lib.network import http_request, NodeInfo, PortInfo, NetworkAPIPath, merge_address, NetworkAPIMethod
+from core.lib.common import ClassFactory, ClassType
 
 from .curve_visualizer import CurveVisualizer
 
@@ -9,28 +8,9 @@ __all__ = ('ScheduleOverheadVisualizer',)
 
 @ClassFactory.register(ClassType.SYSTEM_VISUALIZER, alias='schedule_overhead')
 class ScheduleOverheadVisualizer(CurveVisualizer, abc.ABC):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        self.resource_url = None
-
-    def request_scheduling_overhead(self):
-        self.get_scheduling_overhead_url()
-
-        return http_request(self.resource_url,
-                            method=NetworkAPIMethod.SCHEDULER_OVERHEAD) if self.resource_url else None
-
-    def get_scheduling_overhead_url(self):
-        cloud_hostname = NodeInfo.get_cloud_node()
+    def __call__(self, scheduling_overhead=None, **_):
         try:
-            scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        except AssertionError:
-            return
-        self.resource_url = merge_address(NodeInfo.hostname2ip(cloud_hostname),
-                                          port=scheduler_port,
-                                          path=NetworkAPIPath.SCHEDULER_OVERHEAD)
-
-    def __call__(self):
-        overhead = self.request_scheduling_overhead()
-
-        return {self.variables[0]: overhead * 1000 if overhead else 0}
+            overhead_ms = float(scheduling_overhead) * 1000 if scheduling_overhead else 0
+        except (TypeError, ValueError):
+            overhead_ms = 0
+        return {self.variables[0]: overhead_ms}

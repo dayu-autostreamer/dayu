@@ -22,8 +22,6 @@ declare module '*.vue' {
 /* eslint-disable */
 declare interface Window {
 	nextLoading: boolean;
-	BMAP_SATELLITE_MAP: any;
-	BMap: any;
 }
 
 // Route item types.
@@ -74,21 +72,6 @@ declare type EmptyArrayType<T = any> = T[];
 declare type EmptyObjectType<T = any> = {
 	[key: string]: T;
 };
-declare type SelectOptionType = {
-	value: string | number;
-	label: string | number;
-};
-
 declare interface WheelEventType extends WheelEvent {
 	wheelDelta: number;
-}
-
-declare interface TableType<T = any> {
-	total: number;
-	loading: boolean;
-	param: {
-		pageNum: number;
-		pageSize: number;
-		[key: string]: T;
-	};
 }

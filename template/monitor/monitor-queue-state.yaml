@@ -1,0 +1,15 @@
+position: both
+pod-template:
+  image: monitor
+  imagePullPolicy: Always
+  env:
+    # Invocation-level schedulers require a finer interval than the generic
+    # five-second resource monitor when they consume live processor queues.
+    - name: INTERVAL
+      value: "0.5"
+    - name: MONITORS
+      value: >
+        ['queue_state']
+port-open:
+  pos: cloud
+  port: 9000

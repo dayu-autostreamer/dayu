@@ -199,6 +199,18 @@ def test_context_get_instance_uses_module_globals_and_reports_missing_classes(mo
     assert isinstance(instance, DummyService)
     assert (instance.alpha, instance.beta) == (1, 4)
 
+    class Structured_Processor:
+        def __init__(self, weights):
+            self.weights = weights
+
+    monkeypatch.setattr(context_module, "Structured_Processor", Structured_Processor, raising=False)
+    monkeypatch.setenv("STRUCTURED_PROCESSOR_PARAMETERS", "{'weights': 'model.pt'}")
+
+    structured_processor = Context.get_instance("Structured_Processor")
+
+    assert isinstance(structured_processor, Structured_Processor)
+    assert structured_processor.weights == "model.pt"
+
     with pytest.raises(ValueError, match="Class 'MissingService' is not defined or imported."):
         Context.get_instance("MissingService")
 

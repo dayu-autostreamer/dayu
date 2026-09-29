@@ -14,7 +14,7 @@ pod-template:
     - name: SCH_SELECTION_POLICY_NAME
       value: fixed
     - name: SCH_INITIAL_DEPLOYMENT_POLICY_NAME
-      value: full
+      value: source-edge-cloud
     - name: SCH_REDEPLOYMENT_POLICY_NAME
       value: non
     - name: SCH_AGENT_NAME
@@ -23,19 +23,18 @@ pod-template:
       value: >
         {
           'sch_param':{
-              'record_path':'SteadyAgent-test',
+              'record_path':'records/context',
               'if_stop_record_in_single_cycle':1,
               'stop_max_frame_num':1000,
           },
           'steady_param':{
 
               'kb_path':'test_kb/kb2',
-              'steady_record_path':'OverallScheduler-test',
-              'correct_record_path':'Preditor-test',
+              'steady_record_path':'records/scheduling',
+              'correct_record_path':'records/prediction',
               'delay_cons':0.3,
               'acc_cons':0.6,
               'delay_weight':0.8,
-              'acc_weight':0.2,
               'delay_cons_adjust':0.7,
               'acc_cons_adjust':1.2,
               'default_policy':{
@@ -45,23 +44,24 @@ pod-template:
                   'edge_serv_num':0
               },
               'acc_sample_interval':20,
-              'history_lenghth':3,
+              'history_length':3,
               'stop_threshold':0.1,
               'cluster_threshold':0.5,
+              'if_online_train':True,
               'macro_update_interval':0.01,
-              'context_anylze_type':1,
+              'context_analyze_type':1,
 
               'coeff_info':{
                               'step_coeff':{
                                   'start_value':10,
                                   'add_interval':5,
                                   'min_value':10,
-                                  'max_value':1000,
-                                  'cur_value':10
+                                  'max_value':1000
                               },
                           },
 
               'corrector_param' : {
+                      'corrector_pool_threshold':0.2,
                       'detect':{
                           'n':2,
                           'coeff_window_length':10,

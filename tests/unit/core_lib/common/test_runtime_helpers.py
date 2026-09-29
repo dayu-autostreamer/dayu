@@ -13,7 +13,6 @@ import pytest
 cache_module = importlib.import_module("core.lib.common.cache")
 config_module = importlib.import_module("core.lib.common.config")
 counter_module = importlib.import_module("core.lib.common.counter")
-health_module = importlib.import_module("core.lib.common.health")
 instance_module = importlib.import_module("core.lib.common.instance")
 queue_module = importlib.import_module("core.lib.common.queue")
 record_module = importlib.import_module("core.lib.common.record")
@@ -21,7 +20,6 @@ resource_module = importlib.import_module("core.lib.common.resource")
 service_config_module = importlib.import_module("core.lib.common.service")
 utils_module = importlib.import_module("core.lib.common.utils")
 network_client_module = importlib.import_module("core.lib.network.client")
-node_module = importlib.import_module("core.lib.network.node")
 
 
 ConfigBoundInstanceCache = cache_module.ConfigBoundInstanceCache
@@ -32,22 +30,14 @@ Queue = queue_module.Queue
 Recorder = record_module.Recorder
 ResourceLockManager = resource_module.ResourceLockManager
 ServiceConfig = service_config_module.ServiceConfig
-HealthChecker = health_module.HealthChecker
-NodeInfo = node_module.NodeInfo
 http_request = network_client_module.http_request
 
 
 @pytest.fixture(autouse=True)
 def reset_global_registries():
     GlobalInstanceManager.release_all_instances()
-    NodeInfo._NodeInfo__node_info_hostname = None
-    NodeInfo._NodeInfo__node_info_ip = None
-    NodeInfo._NodeInfo__node_info_role = None
     yield
     GlobalInstanceManager.release_all_instances()
-    NodeInfo._NodeInfo__node_info_hostname = None
-    NodeInfo._NodeInfo__node_info_ip = None
-    NodeInfo._NodeInfo__node_info_role = None
 
 
 @pytest.mark.unit
@@ -581,41 +571,41 @@ def test_http_request_handles_success_redirects_and_failures(monkeypatch):
             return self._payload
 
     response = FakeResponse(200, payload={"ok": True})
-    monkeypatch.setattr(network_client_module.requests, "request", lambda **kwargs: response)
+    monkeypatch.setattr(network_client_module, "_request", lambda **kwargs: response)
     assert http_request("http://service") == {"ok": True}
     assert http_request("http://service", no_decode=True) is response
 
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: FakeResponse(200, payload=None, content=b"payload"),
     )
     assert http_request("http://service", binary=False) == "payload"
 
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: FakeResponse(302),
     )
     assert http_request("http://service") is None
 
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: FakeResponse(404),
     )
     assert http_request("http://service") is None
 
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: (_ for _ in ()).throw(network_client_module.requests.exceptions.Timeout("slow")),
     )
     assert http_request("http://service") is None
 
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: (_ for _ in ()).throw(network_client_module.requests.exceptions.ConnectionError("down")),
     )
     assert http_request("http://service") is None
@@ -646,7 +636,7 @@ def test_http_request_retries_transient_failures(monkeypatch):
             raise response
         return response
 
-    monkeypatch.setattr(network_client_module.requests, "request", timeout_then_success)
+    monkeypatch.setattr(network_client_module, "_request", timeout_then_success)
     assert http_request("http://service", retry=2) == {"ok": True}
     assert len(request_calls) == 2
 
@@ -657,7 +647,7 @@ def test_http_request_retries_transient_failures(monkeypatch):
     request_calls.clear()
     sleep_calls = []
     monkeypatch.setattr(network_client_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
-    monkeypatch.setattr(network_client_module.requests, "request", timeout_then_success)
+    monkeypatch.setattr(network_client_module, "_request", timeout_then_success)
 
     assert http_request("http://service", retry=2, retry_interval=0.25) == {"recovered": True}
     assert len(request_calls) == 2
@@ -680,79 +670,10 @@ def test_http_request_does_not_retry_non_retryable_status(monkeypatch):
 
     request_calls = []
     monkeypatch.setattr(
-        network_client_module.requests,
-        "request",
+        network_client_module,
+        "_request",
         lambda **kwargs: request_calls.append(kwargs) or FakeResponse(),
     )
 
     assert http_request("http://service", retry=3) is None
     assert len(request_calls) == 1
-
-
-@pytest.mark.unit
-def test_health_checker_and_node_info_cover_cluster_lookup_and_caching(monkeypatch):
-    api_calls = {"list_node": 0, "list_namespaced_pod": 0}
-
-    def node(name, ip, role_label):
-        labels = {role_label: ""}
-        return SimpleNamespace(
-            metadata=SimpleNamespace(name=name, labels=labels),
-            status=SimpleNamespace(addresses=[SimpleNamespace(type="InternalIP", address=ip)]),
-        )
-
-    nodes = [
-        node("cloud-node", "10.0.0.1", "node-role.kubernetes.io/master"),
-        node("edge-node", "10.0.0.2", "node-role.kubernetes.io/edge"),
-    ]
-    pods = [
-        SimpleNamespace(spec=SimpleNamespace(node_name="edge-node")),
-        SimpleNamespace(spec=SimpleNamespace(node_name="cloud-node")),
-        SimpleNamespace(spec=SimpleNamespace(node_name="edge-node")),
-    ]
-
-    class FakeCoreV1Api:
-        def list_node(self):
-            api_calls["list_node"] += 1
-            return SimpleNamespace(items=nodes)
-
-        def list_namespaced_pod(self, namespace, label_selector):
-            api_calls["list_namespaced_pod"] += 1
-            return SimpleNamespace(items=pods)
-
-    monkeypatch.setattr(node_module.config, "load_incluster_config", lambda: None)
-    monkeypatch.setattr(node_module.client, "CoreV1Api", FakeCoreV1Api)
-    monkeypatch.setattr(
-        node_module.Context,
-        "get_parameter",
-        staticmethod(lambda key: {"NAMESPACE": "dayu", "NODE_NAME": "edge-node"}.get(key)),
-    )
-    monkeypatch.setenv("NODE_NAME", "edge-node")
-
-    assert NodeInfo.get_node_info() == {"cloud-node": "10.0.0.1", "edge-node": "10.0.0.2"}
-    assert NodeInfo.get_node_info_reverse() == {"10.0.0.1": "cloud-node", "10.0.0.2": "edge-node"}
-    assert NodeInfo.get_node_info_role() == {"cloud-node": "cloud", "edge-node": "edge"}
-    assert api_calls["list_node"] == 1
-
-    assert NodeInfo.hostname2ip("edge-node") == "10.0.0.2"
-    assert NodeInfo.ip2hostname("10.0.0.1") == "cloud-node"
-    assert NodeInfo.url2hostname("http://10.0.0.2:9000/health") == "edge-node"
-    assert NodeInfo.get_node_role("cloud-node") == "cloud"
-    assert NodeInfo.get_cloud_node() == "cloud-node"
-    assert NodeInfo.get_all_edge_nodes() == ["edge-node"]
-    assert sorted(NodeInfo.get_edge_nodes()) == ["edge-node"]
-    assert api_calls["list_namespaced_pod"] == 1
-    assert NodeInfo.get_local_device() == "edge-node"
-
-    monkeypatch.setattr(health_module.NodeInfo, "get_edge_nodes", staticmethod(lambda: ["edge-node"]))
-    monkeypatch.setattr(health_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "cloud-node"))
-    monkeypatch.setattr(health_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: hostname))
-    monkeypatch.setattr(health_module.PortInfo, "get_component_port", staticmethod(lambda component: 9002))
-    monkeypatch.setattr(
-        health_module,
-        "http_request",
-        lambda url, method=None: {"status": "ok"} if "cloud-node" in url or "edge-node" in url else {},
-    )
-    assert HealthChecker.check_processors_health() is True
-
-    monkeypatch.setattr(health_module, "http_request", lambda url, method=None: {"status": "ok"} if "edge-node" in url else {})
-    assert HealthChecker.check_processors_health() is False

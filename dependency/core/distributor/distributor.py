@@ -3,12 +3,14 @@ import json
 import gzip
 import sqlite3
 import tempfile
+import time
 from datetime import datetime
 
 from core.lib.content import Task
 from core.lib.estimation import TimeEstimator
-from core.lib.common import LOGGER, FileNameConstant, FileOps, SystemConstant, Context
-from core.lib.network import http_request, NodeInfo, merge_address, NetworkAPIMethod, NetworkAPIPath, PortInfo
+from core.lib.common import LOGGER, FileNameConstant, FileOps, Context
+from core.lib.network import http_request, NetworkAPIMethod, NetworkAPIPath
+from core.lib.runtime import RuntimeContext, RuntimeLeaseClient, RuntimeLeaseError
 
 
 def _indent_json_block(text, prefix='    '):
@@ -28,18 +30,21 @@ class Distributor:
     _BUSY_TIMEOUT_MS = 5000  # PRAGMA busy_timeout: how long SQLite will wait for locks inside a connection
     _JOURNAL_MODE = "WAL"  # Better read/write concurrency
     _SYNCHRONOUS = "NORMAL"  # Reasonable durability with good throughput (can be "FULL" if you prefer)
+    _INIT_RETRY_SECONDS = 20.0
+    _INIT_RETRY_INTERVAL_SECONDS = 0.05
     _DEFAULT_RESULT_LOG_EXPORT_BATCH_SIZE = 500 # Batch size used when generating compressed export files
     _DEFAULT_RESULT_LOG_RETENTION_RECORDS = 0 # Keep the latest N task results in distributor storage to avoid unbounded growth
     _DEFAULT_RESULT_LOG_RETENTION_PRUNE_INTERVAL = 200 # Prune stale result records every N writes
+    _SCHEDULER_REQUEST_TIMEOUT_SECONDS = 5.0
 
     def __init__(self):
-        self.scheduler_hostname = NodeInfo.get_cloud_node()
-        self.scheduler_port = PortInfo.get_component_port(SystemConstant.SCHEDULER.value)
-        self.scheduler_address = merge_address(
-            NodeInfo.hostname2ip(self.scheduler_hostname),
-            port=self.scheduler_port,
-            path=NetworkAPIPath.SCHEDULER_SCENARIO
+        self.runtime_context = RuntimeContext.get_default()
+        self.runtime_lease_client = RuntimeLeaseClient(
+            self.runtime_context,
+            requester=http_request,
         )
+        self.scheduler_endpoint = self.runtime_context.resolve_static_endpoint('scheduler')
+        self.scheduler_address = self.scheduler_endpoint.url(NetworkAPIPath.SCHEDULER_SCENARIO)
         self.record_path = FileNameConstant.DISTRIBUTOR_RECORD.value
         self.result_log_export_batch_size = max(
             1,
@@ -75,7 +80,9 @@ class Distributor:
         Create a new SQLite connection with:
         - timeout: waits for the specified seconds if the DB is locked
         - busy_timeout: additional in-connection wait for locks
-        - WAL mode & tuned synchronous for better concurrency
+        - tuned synchronous/cache settings for better concurrency
+        WAL mode is established once by `_init_db` because changing persistent
+        journal metadata on every request races with other workers.
         Set autocommit with isolation_level=None if you want BEGIN/COMMIT explicitly.
         """
         isolation_level = None if autocommit else ""  # None => autocommit on; "" => sqlite default (implicit transactions)
@@ -87,9 +94,13 @@ class Distributor:
             check_same_thread=True,  # set False only if you truly share the connection across threads
         )
         cur = conn.cursor()
-        # Apply pragmas every time (safe & ensures settings survive across new connections)
+        # ``journal_mode`` is persistent database metadata and requires an
+        # exclusive lock when it changes.  Setting it on every connection lets
+        # multiple Gunicorn workers race during boot and can kill the whole Pod
+        # with ``database is locked``.  `_init_db` establishes WAL once under a
+        # bounded retry loop; ordinary request connections only apply local
+        # connection settings.
         cur.execute(f"PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS};")
-        cur.execute(f"PRAGMA journal_mode={self._JOURNAL_MODE};")
         cur.execute(f"PRAGMA synchronous={self._SYNCHRONOUS};")
         # Slightly bigger page cache can help for repeated scans
         cur.execute("PRAGMA cache_size=-8000;")  # ~8MB cache; negative means KB
@@ -103,10 +114,20 @@ class Distributor:
         if dirpath:
             os.makedirs(dirpath, exist_ok=True)
 
-        with self._connect(autocommit=True) as conn:
-            c = conn.cursor()
-            # Primary key is (source_id, task_id).
-            c.execute("""
+        deadline = time.monotonic() + self._INIT_RETRY_SECONDS
+        while True:
+            try:
+                with self._connect(autocommit=True) as conn:
+                    c = conn.cursor()
+                    mode = c.execute(
+                        f"PRAGMA journal_mode={self._JOURNAL_MODE};"
+                    ).fetchone()
+                    if not mode or str(mode[0]).lower() != self._JOURNAL_MODE.lower():
+                        raise RuntimeError(
+                            "failed to establish Distributor SQLite WAL mode"
+                        )
+                    # Primary key is (source_id, task_id).
+                    c.execute("""
                       CREATE TABLE IF NOT EXISTS records
                       (
                           source_id
@@ -125,26 +146,81 @@ class Distributor:
                       )
                           );
                       """)
-            # Index to accelerate incremental scans by time
-            c.execute("""
+                    # Index to accelerate incremental scans by time.
+                    c.execute("""
                       CREATE INDEX IF NOT EXISTS idx_records_ctime
                           ON records(ctime);
                       """)
-            conn.commit()
+                    conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                if (
+                    "locked" not in str(exc).lower()
+                    and "busy" not in str(exc).lower()
+                ) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(self._INIT_RETRY_INTERVAL_SECONDS)
 
     def distribute_data(self, cur_task: Task):
         assert cur_task, 'Current task is None'
 
         LOGGER.info(f'[Distribute Data] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 
-        self.save_task_record(cur_task)
-        self.send_scenario_to_scheduler(cur_task)
+        existing = self.get_task_record(cur_task.get_source_id(), cur_task.get_task_id())
+        if existing is not None:
+            if existing.get_root_uuid() != cur_task.get_root_uuid():
+                raise RuntimeError(
+                    f"task identity conflict for source={cur_task.get_source_id()} "
+                    f"task={cur_task.get_task_id()}"
+                )
+            LOGGER.debug(
+                f'[Distribute Data] Idempotent duplicate accepted. '
+                f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}'
+            )
+            return True
+
+        try:
+            # Fence late results before they become durable. A task whose
+            # directory revision has retired must not reappear after Backend
+            # has released the rollout gate at its deadline.
+            self.runtime_lease_client.renew(cur_task)
+        except RuntimeLeaseError as exc:
+            LOGGER.warning(
+                f'[Runtime Task Lease] Drop unowned result before persistence. '
+                f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}: {exc}'
+            )
+            return False
+
+        inserted = self.save_task_record(cur_task)
+        if not inserted:
+            return True
+        if not self.send_scenario_to_scheduler(cur_task):
+            LOGGER.warning(
+                f'[Scheduler Scenario] Durable task result was accepted but scenario feedback was not. '
+                f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}'
+            )
+        try:
+            self.runtime_lease_client.release(cur_task)
+        except RuntimeLeaseError as exc:
+            # A failed release is deliberately not retried or emulated.  The
+            # scheduler lease remains until its TTL or the immutable retirement
+            # deadline, whichever comes first.
+            LOGGER.warning(
+                f'[Runtime Task Lease] Release failed; retain until TTL. '
+                f'source={cur_task.get_source_id()} task={cur_task.get_task_id()}: {exc}'
+            )
+        return True
+
+    def get_task_record(self, source_id, task_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT json FROM records WHERE source_id = ? AND task_id = ?",
+                (source_id, task_id),
+            ).fetchone()
+        return Task.deserialize(row[0]) if row else None
 
     def save_task_record(self, cur_task: Task):
-        """
-        Insert or update a record for the task.
-        NOTE: Try INSERT first, and on conflict log a warning (same behavior as original).
-        """
+        """Persist once and treat a repeated delivery of the same root task as idempotent."""
         self.record_total_end_ts(cur_task)
         task_source_id = cur_task.get_source_id()
         task_task_id = cur_task.get_task_id()
@@ -161,37 +237,47 @@ class Distributor:
                 )
                 conn.commit()
         except sqlite3.IntegrityError:
-            LOGGER.warning(
-                f'[Task Name Conflict] source_id: {task_source_id}, task_id: {task_task_id} already exists.'
+            existing = self.get_task_record(task_source_id, task_task_id)
+            if existing is None or existing.get_root_uuid() != cur_task.get_root_uuid():
+                raise RuntimeError(
+                    f"task identity conflict for source={task_source_id} task={task_task_id}"
+                )
+            LOGGER.debug(
+                f'[Distribute Data] Concurrent duplicate accepted. '
+                f'source={task_source_id} task={task_task_id}'
             )
-            return
+            return False
 
         self._writes_since_prune += 1
         if self.result_log_retention_records and self._writes_since_prune >= self.result_log_retention_prune_interval:
             self._prune_old_records()
             self._writes_since_prune = 0
+        return True
 
     @staticmethod
     def record_total_end_ts(cur_task):
         TimeEstimator.record_task_ts(cur_task, 'total_end_time', is_end=False)
 
     def send_scenario_to_scheduler(self, cur_task: Task):
-        """
-        Send scenario to scheduler with simple retries and short timeouts.
-        Network errors are logged and retried; DB is unaffected.
-        """
+        """Send one bounded best-effort scenario update after durable storage."""
         assert cur_task, 'Current task is None'
         LOGGER.info(f'[Send Scenario] source: {cur_task.get_source_id()}  task: {cur_task.get_task_id()}')
 
         try:
-            http_request(
+            response = http_request(
                 url=self.scheduler_address,
                 method=NetworkAPIMethod.SCHEDULER_SCENARIO,
+                timeout=self._SCHEDULER_REQUEST_TIMEOUT_SECONDS,
                 data={'data': cur_task.serialize()})
+            if not isinstance(response, dict) or response.get('accepted') is not True:
+                LOGGER.warning('Scheduler did not acknowledge the scenario update.')
+                return False
+            return True
 
         except Exception as e:
             LOGGER.warning(f"Send scenario to scheduler failed: {e}")
             LOGGER.exception(e)
+            return False
 
     @staticmethod
     def record_transmit_ts(cur_task):

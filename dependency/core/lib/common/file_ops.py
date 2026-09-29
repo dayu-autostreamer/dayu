@@ -1,10 +1,11 @@
+import hashlib
 import os
 import shutil
 import tempfile
-import time
 import threading
-from pathlib import Path
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Optional, Union
 
 from .context import Context
@@ -21,13 +22,32 @@ class FileOps:
 
     @classmethod
     def _get_task_temp_relative_path(cls, task):
-        return os.path.join(cls._get_task_temp_namespace(), task.get_file_path())
+        root_uuid = str(task.get_root_uuid() or "").strip()
+        if not root_uuid:
+            raise ValueError("Task root_uuid is required to resolve its temporary artifact.")
+        revision = int(task.get_runtime_directory_revision())
+        suffix = Path(task.get_file_path() or "").suffix
+        identity = hashlib.sha256(f"{revision}:{root_uuid}".encode("utf-8")).hexdigest()
+        return os.path.join(cls._get_task_temp_namespace(), f"{identity}{suffix}")
 
     @staticmethod
     def save_task_file_in_temp(task, file_data):
         file_path = Context.get_temporary_file_path(FileOps._get_task_temp_relative_path(task))
-        with open(file_path, 'wb') as buffer:
-            buffer.write(file_data)
+        FileOps._atomic_write(file_path, file_data)
+
+    @staticmethod
+    def _atomic_write(file_path, file_data):
+        file_descriptor, staging_path = tempfile.mkstemp(
+            prefix=".dayu-artifact-",
+            dir=os.path.dirname(os.path.abspath(file_path)),
+        )
+        try:
+            with os.fdopen(file_descriptor, 'wb') as buffer:
+                buffer.write(file_data)
+            os.replace(staging_path, file_path)
+        except Exception:
+            FileOps.remove_file(staging_path)
+            raise
 
     @staticmethod
     def remove_task_file_in_temp(task):
@@ -35,9 +55,12 @@ class FileOps:
         FileOps.remove_file(file_path)
 
     @staticmethod
-    def clear_task_temp_directory():
-        temp_dir = Context.get_temporary_file_path(FileOps._get_task_temp_namespace())
-        FileOps.clear_directory(temp_dir)
+    def touch_task_file_in_temp(task):
+        file_path = FileOps.get_task_file_in_temp(task)
+        if not os.path.isfile(file_path):
+            return False
+        os.utime(file_path, None)
+        return True
 
     @staticmethod
     def get_task_file_in_temp(task):
@@ -50,8 +73,7 @@ class FileOps:
     @staticmethod
     def save_task_file(task, file_data):
         file_path = task.get_file_path()
-        with open(file_path, 'wb') as buffer:
-            buffer.write(file_data)
+        FileOps._atomic_write(file_path, file_data)
 
     @staticmethod
     def remove_task_file(task):

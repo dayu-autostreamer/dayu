@@ -2,6 +2,11 @@ import abc
 
 from core.lib.common import ClassFactory, ClassType, LOGGER
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling.pipeline import materialize_pipeline_policy, pipeline_entries
+from core.lib.scheduling.live_state import (
+    active_deployment_for_dag,
+    require_active_plan,
+)
 
 from .base_agent import BaseAgent
 
@@ -49,22 +54,42 @@ class FCAgent(BaseAgent, abc.ABC):
         self.overhead_estimator = OverheadEstimator('FC', 'scheduler/fc', agent_id=self.agent_id)
 
     def get_schedule_plan(self, info):
+        edge_device = info['source_device']
+        terminal_index = len(pipeline_entries(info['dag'])) - 1
         if len(self.history_window) < self.window_length:
             LOGGER.info('[FC adjust] not enough history window')
-            return None
+            # Emit an explicit all-edge bootstrap until feedback is available.
+            policy = materialize_pipeline_policy(
+                self.reference_policy,
+                info['dag'],
+                terminal_index,
+                edge_device=edge_device,
+                cloud_device=self.cloud_device,
+            )
+        else:
+            policy = self.reference_policy.copy()
 
-        policy = self.reference_policy.copy()
+            with self.overhead_estimator:
+                updated_resolution_index = self.feed_back_control()
 
-        with self.overhead_estimator:
-            updated_resolution_index = self.feed_back_control()
+            policy.update({'resolution': self.resolution_list[updated_resolution_index]})
+            policy = materialize_pipeline_policy(
+                policy,
+                info['dag'],
+                0,
+                edge_device=edge_device,
+                cloud_device=self.cloud_device,
+            )
 
-        policy.update({'resolution': self.resolution_list[updated_resolution_index]})
-        cloud_device = self.cloud_device
-        dag = info['dag']
-        for service_name in dag:
-            dag[service_name]['service']['execute_device'] = cloud_device
-
-        policy.update({'dag': dag})
+        _, deployment = active_deployment_for_dag(self.system, policy['dag'])
+        require_active_plan(
+            {
+                entry['service_name']:
+                    policy['dag'][entry['service_name']]['service']['execute_device']
+                for entry in pipeline_entries(policy['dag'])[:-1]
+            },
+            deployment,
+        )
         return policy
 
     def calculate_delay_error(self, delay):

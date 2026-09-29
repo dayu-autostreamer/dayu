@@ -19,9 +19,8 @@ def test_fixed_selection_policy_can_select_from_all_edge_nodes_scope():
         {
             "source": {"id": 0},
             "node_set": ["edge-a", "edge-b"],
-            "all_edge_nodes": ["edge-a", "edge-b", "edge-free"],
+            "source_candidate_nodes": ["edge-a", "edge-b", "edge-free"],
         }
     )
 
     assert selected_node == "edge-free"
-

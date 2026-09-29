@@ -1,20 +1,20 @@
 ---
 name: Question
-about: Question relating to KubeEdge.
+about: Ask a question about using or contributing to Dayu
 title: '[QUESTION]'
 labels: question
 assignees: ''
-
 ---
 
-<!-- Please use this template while providing as much info as possible. Thanks!-->
-**What happened and what you expected to happen**:
+<!--
+Help and contact channels: https://github.com/dayu-autostreamer/dayu/blob/main/SUPPORT.md
+Include only relevant, non-sensitive configuration or logs.
+-->
 
-**How to reproduce it**:
+**Your question or intended outcome**:
 
-**Anything else we need to know?**:
+**What you have tried and relevant documentation**:
 
-**Environment**:
-- Kubernetes version (use `kubectl version`):
-- KubeEdge version(e.g. `cloudcore --version` and `edgecore --version`):
-- Dayu version:
+**Dayu version or commit**:
+
+**Relevant environment, configuration, or reproduction steps**:

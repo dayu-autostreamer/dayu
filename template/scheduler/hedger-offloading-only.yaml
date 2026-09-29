@@ -15,23 +15,13 @@ pod-template:
           'overrides':{
             'device':'cuda:1',
             'inference':{
-              'run_deployment_worker': False,
-              'run_offloading_worker': True,
-              'offloading_deterministic': True
+              'run_deployment_worker': False
             },
             'checkpoint':{
-              'root_dir':'hedger_model',
               'load':{
-                'enabled': True,
-                'from_stage':'joint_finetune',
-                'which':'final',
                 'restore':{
-                  'encoder': True,
-                  'deployment_agent': False,
-                  'offloading_agent': True,
-                  'optimizer': False
-                },
-                'reset_stage_counters': True
+                  'deployment_agent': False
+                }
               }
             }
           }

@@ -2,8 +2,9 @@ import os
 import time
 import re
 
-from core.lib.network import NetworkAPIPath, NetworkAPIMethod, http_request, NodeInfo, PortInfo, merge_address
-from core.lib.common import LOGGER, Context, SystemConstant
+from core.lib.network import NetworkAPIPath, NetworkAPIMethod, http_request
+from core.lib.common import LOGGER, Context
+from core.lib.runtime import RuntimeContext, RuntimeResolver
 from script_helper import ScriptHelper
 
 
@@ -15,11 +16,13 @@ class DataSource:
 
         self.process_list = []
 
-        self.backend_hostname = NodeInfo.get_cloud_node()
-        self.backend_port = PortInfo.get_component_port(SystemConstant.BACKEND.value)
-        self.backend_address = merge_address(NodeInfo.hostname2ip(self.backend_hostname),
-                                             port=self.backend_port,
-                                             path=NetworkAPIPath.BACKEND_DATASOURCE_STATE)
+        self.runtime_context = RuntimeContext.get_default()
+        self.runtime_resolver = RuntimeResolver(self.runtime_context)
+        self.backend_address = self.runtime_resolver.resolve_url(
+            "backend",
+            path=NetworkAPIPath.BACKEND_DATASOURCE_STATE,
+            target_node=self.runtime_context.cloud_node or None,
+        )
 
         self.inner_port = Context.get_parameter('GUNICORN_PORT')
 
@@ -34,7 +37,9 @@ class DataSource:
 
     def open_datasource(self, modal, label, mode, source_list):
         if self.source_open:
-            return
+            if self.source_label == label:
+                return
+            self.close_datasource()
 
         if not os.path.exists(f'{mode}.py'):
             LOGGER.warning(f'Datasource Mode of "{mode}" does not exist. ({mode}.py)')

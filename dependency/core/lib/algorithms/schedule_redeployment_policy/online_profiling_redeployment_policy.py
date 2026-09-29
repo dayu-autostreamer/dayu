@@ -3,8 +3,14 @@ import copy
 
 from .base_redeployment_policy import BaseRedeploymentPolicy
 
-from core.lib.common import ClassFactory, ClassType, LOGGER, ConfigLoader, Context, TaskConstant
+from core.lib.common import ClassFactory, ClassType, LOGGER, ConfigLoader, Context
 from core.lib.estimation import OverheadEstimator
+from core.lib.scheduling.deployment_plan import (
+    cloud_replica_plan,
+    dag_services,
+    normalize_include_cloud,
+    validate_plan,
+)
 
 __all__ = ('OnlineProfilingRedeploymentPolicy',)
 
@@ -25,10 +31,12 @@ class OnlineProfilingRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
 
     def __init__(self, system, agent_id, latency_profile=None, device_service_limits=None,
                  service_replica_count=None, default_service_limit=None, default_replica_count=None,
-                 service_importance_weights=None, **kwargs):
+                 service_importance_weights=None, include_cloud=False, **kwargs):
 
         self.system = system
         self.agent_id = agent_id
+        self.cloud_device = str(getattr(system, 'cloud_device', '') or '')
+        self.include_cloud = normalize_include_cloud(include_cloud)
 
         # Initial latency observations collected offline and used as seeds.
         # Format: {service_name: {device_name: latency}}
@@ -151,7 +159,7 @@ class OnlineProfilingRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
             LOGGER.warning(f'[Online Profiling Redeployment] Failed to get latency profile from agent: {e}')
 
         # Fall back to the initial latency profile when agent access fails.
-        LOGGER.debug(f'[Online Profiling Redeployment] Using initial latency profile')
+        LOGGER.debug('[Online Profiling Redeployment] Using initial latency profile')
         return copy.deepcopy(self.initial_latency_profile)
 
     def calculate_task_complexity(self, latency_profile):
@@ -231,8 +239,17 @@ class OnlineProfilingRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
         task_complexity = self.calculate_task_complexity(latency_profile)
         device_capability = self.calculate_device_capability(latency_profile, available_devices)
 
-        # Sort services by descending complexity.
-        sorted_services = sorted(task_complexity.items(), key=lambda x: x[1], reverse=True)
+        # Cover the complete current DAG even when online profiling has not
+        # produced a sample for a service yet.
+        current_services = dag_services({'dag': dag})
+        sorted_services = sorted(
+            (
+                (service, task_complexity.get(service, 0.0))
+                for service in current_services
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
 
         # Sort devices by ascending score; lower weighted latency means stronger.
         sorted_devices = sorted(device_capability.items(), key=lambda x: x[1])
@@ -316,22 +333,34 @@ class OnlineProfilingRedeploymentPolicy(BaseRedeploymentPolicy, abc.ABC):
             latency_profile = self.get_latency_profile_from_agent()
 
             # Step 3: Keep edge devices only and run greedy placement.
-            cloud_device = getattr(self.system, 'cloud_device', None)
-            available_devices = [node for node in node_set if node != cloud_device]
+            available_devices = [node for node in node_set if node != self.cloud_device]
 
             if not available_devices:
                 LOGGER.warning(f'[Online Profiling Redeployment] (source {source_id}) No edge devices available')
                 deploy_plan = {
-                    service_name: []
-                    for service_name in dag
-                    if service_name not in (TaskConstant.START.value, TaskConstant.END.value)
+                    service_name: ([self.cloud_device] if self.include_cloud and self.cloud_device else [])
+                    for service_name in dag_services(info)
                 }
             else:
                 deploy_plan = self.greedy_deployment(latency_profile, dag, available_devices)
 
+            if self.include_cloud:
+                deploy_plan = cloud_replica_plan(
+                    deploy_plan,
+                    info,
+                    self.cloud_device,
+                    policy_name="online profiling include_cloud",
+                )
+            else:
+                deploy_plan = validate_plan(
+                    deploy_plan,
+                    info,
+                    cloud_node=self.cloud_device,
+                )
+
             LOGGER.info(f'[Online Profiling Redeployment] (source {source_id}) Deploy policy: {deploy_plan}')
 
-            self.policy = deploy_plan
+            self.policy = copy.deepcopy(deploy_plan)
 
         return deploy_plan
 

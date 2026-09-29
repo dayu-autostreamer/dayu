@@ -14,7 +14,7 @@ pod-template:
           'profile':'offloading_benchmark',
           'overrides':{
             'device':'cuda:1',
-            'record': {'actor_snapshot_debug': True, 'decision_actor_debug': True}
+            'record': {'actor_snapshot_debug': True}
           }
         }
     - name: SCH_SCENARIO_RETRIEVAL_NAME

@@ -12,13 +12,18 @@ import { useTagsViewRoutes } from '/@/stores/tagsViewRoutes';
 import { useMenuApi } from '/@/api/menu/index';
 
 const menuApi = useMenuApi();
+type DynamicModuleLoader = () => Promise<unknown>;
 
 /**
  * Load view modules that can be resolved from backend route definitions.
  */
-const layoutModules: any = import.meta.glob('../layout/routerView/*.{vue,tsx}');
-const viewsModules: any = import.meta.glob('../views/**/*.{vue,tsx}');
-const dynamicViewsModules: Record<string, Function> = Object.assign({}, { ...layoutModules }, { ...viewsModules });
+const layoutModules = import.meta.glob('../layout/routerView/*.{vue,tsx}');
+const viewsModules = import.meta.glob('../views/**/*.{vue,tsx}');
+const dynamicViewsModules: Record<string, DynamicModuleLoader> = Object.assign(
+	{},
+	{ ...layoutModules },
+	{ ...viewsModules }
+);
 
 /**
  * Initialize backend-driven routes after a page refresh.
@@ -56,7 +61,7 @@ export function setCacheTagsViewRoutes() {
  * Finalize dynamic routes and append fallback pages.
  */
 export function setFilterRouteEnd() {
-	let filterRouteEnd: any = formatTwoStageRoutes(formatFlatteningRoutes(dynamicRoutes));
+	const filterRouteEnd: any = formatTwoStageRoutes(formatFlatteningRoutes(dynamicRoutes));
 	filterRouteEnd[0].children = [...filterRouteEnd[0].children, ...notFoundAndNoPower];
 	return filterRouteEnd;
 }
@@ -77,8 +82,8 @@ export function getBackEndControlRoutes() {
 	const stores = useUserInfo(pinia);
 	const { userInfos } = storeToRefs(stores);
 	const auth = userInfos.value.roles[0];
-	if (auth === 'dayu') return menuApi.getAdminMenu();
-	else return menuApi.getTestMenu();
+	if (auth === 'dayu') return menuApi.getDayuMenu();
+	else return menuApi.getCommonMenu();
 }
 
 /**
@@ -103,7 +108,7 @@ export function backEndComponent(routes: any) {
 /**
  * Match a backend component path to a local module import.
  */
-export function dynamicImport(dynamicViewsModules: Record<string, Function>, component: string) {
+export function dynamicImport(dynamicViewsModules: Record<string, DynamicModuleLoader>, component: string) {
 	const keys = Object.keys(dynamicViewsModules);
 	const matchKeys = keys.filter((key) => {
 		const k = key.replace(/..\/views|../, '');

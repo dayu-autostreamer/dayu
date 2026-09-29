@@ -1,0 +1,147 @@
+{
+  "format": "dayu.application-dag",
+  "version": 1,
+  "dag_name": "driving risk perception",
+  "dag": {
+    "_start": [
+      "traffic-detection",
+      "road-context-segmentation"
+    ],
+    "traffic-detection": {
+      "id": "traffic-detection",
+      "prev": [],
+      "succ": [
+        "traffic-signal-recognition",
+        "vehicle-tracking",
+        "vehicle-attribute-recognition",
+        "pedestrian-pose-estimation"
+      ],
+      "service_id": "traffic-detection"
+    },
+    "road-context-segmentation": {
+      "id": "road-context-segmentation",
+      "prev": [],
+      "succ": [
+        "vehicle-trajectory-prediction",
+        "pedestrian-intent-recognition",
+        "risk-graph-generation"
+      ],
+      "service_id": "road-context-segmentation"
+    },
+    "traffic-signal-recognition": {
+      "id": "traffic-signal-recognition",
+      "prev": [
+        "traffic-detection"
+      ],
+      "succ": [
+        "risk-graph-generation"
+      ],
+      "service_id": "traffic-signal-recognition"
+    },
+    "vehicle-tracking": {
+      "id": "vehicle-tracking",
+      "prev": [
+        "traffic-detection"
+      ],
+      "succ": [
+        "vehicle-trajectory-prediction"
+      ],
+      "service_id": "vehicle-tracking"
+    },
+    "vehicle-attribute-recognition": {
+      "id": "vehicle-attribute-recognition",
+      "prev": [
+        "traffic-detection"
+      ],
+      "succ": [
+        "vehicle-trajectory-prediction"
+      ],
+      "service_id": "vehicle-attribute-recognition"
+    },
+    "vehicle-trajectory-prediction": {
+      "id": "vehicle-trajectory-prediction",
+      "prev": [
+        "road-context-segmentation",
+        "vehicle-tracking",
+        "vehicle-attribute-recognition"
+      ],
+      "succ": [
+        "risk-graph-generation"
+      ],
+      "service_id": "vehicle-trajectory-prediction"
+    },
+    "pedestrian-pose-estimation": {
+      "id": "pedestrian-pose-estimation",
+      "prev": [
+        "traffic-detection"
+      ],
+      "succ": [
+        "pedestrian-intent-recognition"
+      ],
+      "service_id": "pedestrian-pose-estimation"
+    },
+    "pedestrian-intent-recognition": {
+      "id": "pedestrian-intent-recognition",
+      "prev": [
+        "road-context-segmentation",
+        "pedestrian-pose-estimation"
+      ],
+      "succ": [
+        "risk-graph-generation"
+      ],
+      "service_id": "pedestrian-intent-recognition"
+    },
+    "risk-graph-generation": {
+      "id": "risk-graph-generation",
+      "prev": [
+        "road-context-segmentation",
+        "traffic-signal-recognition",
+        "vehicle-trajectory-prediction",
+        "pedestrian-intent-recognition"
+      ],
+      "succ": [],
+      "service_id": "risk-graph-generation"
+    }
+  },
+  "layout": {
+    "direction": "LR",
+    "nodes": {
+      "traffic-detection": {
+        "x": 0,
+        "y": 120
+      },
+      "road-context-segmentation": {
+        "x": 0,
+        "y": 300
+      },
+      "traffic-signal-recognition": {
+        "x": 240,
+        "y": 0
+      },
+      "vehicle-tracking": {
+        "x": 240,
+        "y": 120
+      },
+      "vehicle-attribute-recognition": {
+        "x": 240,
+        "y": 220
+      },
+      "vehicle-trajectory-prediction": {
+        "x": 520,
+        "y": 160
+      },
+      "pedestrian-pose-estimation": {
+        "x": 240,
+        "y": 360
+      },
+      "pedestrian-intent-recognition": {
+        "x": 520,
+        "y": 360
+      },
+      "risk-graph-generation": {
+        "x": 800,
+        "y": 240
+      }
+    }
+  }
+}

@@ -158,38 +158,99 @@ def test_gpu_flops_monitor_covers_pycuda_loading_and_arm_jetson_detection(monkey
     assert gpu_flops_module.GPUFlopsMonitor.is_jetson_device() is True
 
 
+def configure_jetson_sysfs(monkeypatch, tmp_path, *, soc_id="35", mask="0xf", cur_freq=1_173_000_000):
+    soc_file = tmp_path / "soc_id"
+    soc_file.write_text(soc_id, encoding="utf-8")
+    gpu_root = tmp_path / "17000000.gpu"
+    devfreq = gpu_root / "devfreq" / "17000000.gpu"
+    devfreq.mkdir(parents=True)
+    (gpu_root / "tpc_fs_mask").write_text(mask, encoding="utf-8")
+    (devfreq / "cur_freq").write_text(str(cur_freq), encoding="utf-8")
+    (devfreq / "max_freq").write_text("1173000000", encoding="utf-8")
+    monkeypatch.setattr(gpu_flops_module.GPUFlopsMonitor, "JETSON_SOC_ID_PATHS", (str(soc_file),))
+    monkeypatch.setattr(gpu_flops_module.GPUFlopsMonitor, "JETSON_DEVFREQ_PATTERNS", (str(devfreq),))
+    return gpu_root, devfreq
+
+
 @pytest.mark.unit
-def test_gpu_flops_monitor_uses_current_clock_for_each_sample(monkeypatch):
+def test_gpu_flops_monitor_uses_jetson_sysfs_without_pycuda(monkeypatch, tmp_path):
+    gpu_root, devfreq = configure_jetson_sysfs(monkeypatch, tmp_path)
     monkeypatch.setattr(
         gpu_flops_module.GPUFlopsMonitor,
         "is_jetson_device",
         staticmethod(lambda: True),
     )
-    monitor = gpu_flops_module.GPUFlopsMonitor(SimpleNamespace(resource_info={}))
-    monitor._device_meta = [{
-        "idx": 0,
-        "name": "jetson-test-gpu",
-        "max_freq_khz": 1_000_000.0,
-        "capability": (8, 7),
-        "sm_count": 2,
-        "fp32_cores_per_sm": 128,
-        "dual_factor": 2.0,
-    }]
-
-    samples = iter([[500_000_000], [250_000_000]])  # Jetson devfreq reports Hz.
     monkeypatch.setattr(
         gpu_flops_module.GPUFlopsMonitor,
-        "_get_current_clocks_via_jetson_sysfs",
-        staticmethod(lambda: next(samples)),
+        "load_pycuda",
+        staticmethod(lambda: (_ for _ in ()).throw(AssertionError("PyCUDA must not load on Jetson"))),
     )
+    monitor = gpu_flops_module.GPUFlopsMonitor(SimpleNamespace(resource_info={}))
 
     first = monitor.get_parameter_value()
+    (devfreq / "cur_freq").write_text("586500000", encoding="utf-8")
     second = monitor.get_parameter_value()
 
-    assert first == pytest.approx(
-        gpu_flops_module.GPUFlopsMonitor.calculate_flops(2, 128, 500_000, 2.0) / 1e9
-    )
+    # T234 mask 0xf = 4 active TPCs; GA10B has 2 SM/TPC and 128 FP32 lanes/SM.
+    assert first == pytest.approx(2402.304)
     assert second == pytest.approx(first / 2.0)
+    assert monitor._jetson_profile["capability"] == (8, 7)
+    assert bin(monitor._parse_tpc_mask((gpu_root / "tpc_fs_mask").read_text())).count("1") == 4
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("soc_id", "mask", "expected_gflops"),
+    [
+        ("33", "0x1", 256.0),   # T210/GM20B: 1 TPC * 1 SM * 128 lanes
+        ("24", "0x3", 512.0),   # T186/GP10B: 2 TPC * 1 SM * 128 lanes
+        ("25", "0xf", 1024.0),  # T194/GV11B: 4 TPC * 2 SM * 64 lanes
+        ("35", "0xff", 4096.0),  # T234/GA10B: 8 TPC * 2 SM * 128 lanes
+    ],
+)
+def test_gpu_flops_monitor_jetson_soc_profiles(monkeypatch, tmp_path, soc_id, mask, expected_gflops):
+    configure_jetson_sysfs(
+        monkeypatch,
+        tmp_path,
+        soc_id=soc_id,
+        mask=mask,
+        cur_freq=1_000_000_000,
+    )
+    monkeypatch.setattr(
+        gpu_flops_module.GPUFlopsMonitor,
+        "is_jetson_device",
+        staticmethod(lambda: True),
+    )
+
+    monitor = gpu_flops_module.GPUFlopsMonitor(SimpleNamespace(resource_info={}))
+    assert monitor.get_parameter_value() == pytest.approx(expected_gflops)
+
+
+@pytest.mark.unit
+def test_gpu_flops_monitor_rejects_topology_that_changes_during_both_sampling_attempts(monkeypatch, tmp_path):
+    gpu_root, _ = configure_jetson_sysfs(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        gpu_flops_module.GPUFlopsMonitor,
+        "is_jetson_device",
+        staticmethod(lambda: True),
+    )
+    original_read = gpu_flops_module.GPUFlopsMonitor._read_text
+    mask_samples = iter(["0xf", "0x3", "0xf", "0x3"])
+
+    def read_with_changing_mask(path):
+        if path == str(gpu_root / "tpc_fs_mask"):
+            return next(mask_samples)
+        return original_read(path)
+
+    monkeypatch.setattr(
+        gpu_flops_module.GPUFlopsMonitor,
+        "_read_text",
+        staticmethod(read_with_changing_mask),
+    )
+    monkeypatch.setattr(gpu_flops_module.LOGGER, "warning", lambda message: None)
+
+    monitor = gpu_flops_module.GPUFlopsMonitor(SimpleNamespace(resource_info={}))
+    assert monitor.get_parameter_value() is None
 
 
 @pytest.mark.unit
@@ -202,7 +263,6 @@ def test_gpu_flops_monitor_reuses_cached_device_meta_without_reloading(monkeypat
         "capability": (8, 6),
         "sm_count": 1,
         "fp32_cores_per_sm": 128,
-        "dual_factor": 2.0,
     }]
     monitor._device_meta = cached_meta
 
@@ -215,12 +275,8 @@ def test_gpu_flops_monitor_reuses_cached_device_meta_without_reloading(monkeypat
         staticmethod(fail_loader),
     )
 
-    monitor._device_meta_loader_id = None
-    assert monitor._get_device_meta(is_jetson=True) is cached_meta
-
-    monitor._device_meta_loader_id = id(monitor.load_pycuda)
-    monitor._device_meta_is_jetson = True
-    assert monitor._get_device_meta(is_jetson=True) is cached_meta
+    assert monitor._get_device_meta() is cached_meta
+    assert monitor._get_device_meta() is cached_meta
 
 
 @pytest.mark.unit
@@ -233,7 +289,6 @@ def test_gpu_flops_monitor_normalizes_clock_units_and_caps_to_max(monkeypatch):
         "capability": (8, 6),
         "sm_count": 1,
         "fp32_cores_per_sm": 128,
-        "dual_factor": 2.0,
     }]
     monkeypatch.setattr(
         gpu_flops_module.GPUFlopsMonitor,
@@ -245,5 +300,53 @@ def test_gpu_flops_monitor_normalizes_clock_units_and_caps_to_max(monkeypatch):
     assert gpu_flops_module.GPUFlopsMonitor._clock_value_to_khz(1_500_000) == 1_500_000
     assert gpu_flops_module.GPUFlopsMonitor._clock_value_to_khz(1_500_000_000) == 1_500_000
     assert monitor.get_parameter_value() == pytest.approx(
-        gpu_flops_module.GPUFlopsMonitor.calculate_flops(1, 128, 1_000_000, 2.0) / 1e9
+        gpu_flops_module.GPUFlopsMonitor.calculate_flops(1, 128, 1_000_000) / 1e9
     )
+
+
+@pytest.mark.unit
+def test_gpu_flops_monitor_omits_repeated_failures_and_recovers(monkeypatch, tmp_path):
+    configure_jetson_sysfs(monkeypatch, tmp_path, soc_id="999")
+    monkeypatch.setattr(
+        gpu_flops_module.GPUFlopsMonitor,
+        "is_jetson_device",
+        staticmethod(lambda: True),
+    )
+    warnings = []
+    infos = []
+    monkeypatch.setattr(gpu_flops_module.LOGGER, "warning", warnings.append)
+    monkeypatch.setattr(gpu_flops_module.LOGGER, "info", infos.append)
+    monitor = gpu_flops_module.GPUFlopsMonitor(SimpleNamespace(resource_info={}))
+
+    assert monitor.get_parameter_value() is None
+    assert monitor.get_parameter_value() is None
+    assert len(warnings) == 1
+
+    (tmp_path / "soc_id").write_text("35", encoding="utf-8")
+    assert monitor.get_parameter_value() == pytest.approx(2402.304)
+    assert infos == ["GPU FLOPS monitor recovered"]
+
+
+@pytest.mark.unit
+def test_gpu_flops_monitor_keeps_last_valid_sample_when_sysfs_is_temporarily_unavailable(monkeypatch, tmp_path):
+    _, devfreq = configure_jetson_sysfs(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        gpu_flops_module.GPUFlopsMonitor,
+        "is_jetson_device",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(gpu_flops_module.LOGGER, "warning", lambda message: None)
+    timestamps = iter([10.0, 20.0, 26.0])
+    monkeypatch.setattr(gpu_flops_module.time, "monotonic", lambda: next(timestamps))
+    system = SimpleNamespace(resource_info={})
+    monitor = gpu_flops_module.GPUFlopsMonitor(system)
+
+    monitor.run_monitor(system)
+    assert system.resource_info["gpu_flops"] == pytest.approx(2402.304)
+
+    (devfreq / "cur_freq").write_text("0", encoding="utf-8")
+    monitor.run_monitor(system)
+    assert system.resource_info["gpu_flops"] == pytest.approx(2402.304)
+
+    monitor.run_monitor(system)
+    assert "gpu_flops" not in system.resource_info

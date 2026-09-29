@@ -1,0 +1,51 @@
+# Routing hints only; labels do not approve changes or select governance votes.
+# Keep sync-labels disabled so human triage labels are not removed.
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ['**/*.md']
+test:
+  - changed-files:
+      - any-glob-to-any-file: ['tests/**']
+area/community:
+  - changed-files:
+      - any-glob-to-any-file:
+          - GOVERNANCE.md
+          - MAINTAINERS.md
+          - CONTRIBUTING.md
+          - CODE_OF_CONDUCT.md
+          - SECURITY.md
+          - SUPPORT.md
+          - OWNERS
+          - .github/CODEOWNERS
+          - .github/requirements/community.txt
+          - .github/ISSUE_TEMPLATE/**
+          - .github/PULL_REQUEST_TEMPLATE.md
+          - .github/labeler.yml
+          - .github/workflows/community.yml
+          - .github/workflows/pr-labeler.yml
+          - .github/workflows/owners-review.yml
+          - docs/development/community-administration.md
+          - docs/development/owners.md
+          - tools/validate_community.py
+          - tools/owners.py
+          - tools/request_owner_review.py
+          - tests/unit/test_owners*.py
+          - tests/unit/test_validate_community.py
+area/ci:
+  - changed-files:
+      - any-glob-to-any-file: ['.github/workflows/**', '.github/dependabot.yml', '.circleci/**', 'codecov.yml']
+area/backend:
+  - changed-files:
+      - any-glob-to-any-file: ['backend/**']
+area/frontend:
+  - changed-files:
+      - any-glob-to-any-file: ['frontend/**']
+area/runtime:
+  - changed-files:
+      - any-glob-to-any-file: ['dependency/core/**', 'components/**', 'template/**']
+area/datasource:
+  - changed-files:
+      - any-glob-to-any-file: ['datasource/**']
+area/build:
+  - changed-files:
+      - any-glob-to-any-file: ['build/**', 'docker-bake.hcl', 'Makefile']

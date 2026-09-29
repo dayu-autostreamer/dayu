@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+from core.lib.runtime import RuntimeContext
+
 
 monitor_module = importlib.import_module("core.monitor.monitor")
 monitor_server_module = importlib.import_module("core.monitor.monitor_server")
@@ -28,7 +30,7 @@ def test_monitor_initializes_workers_waits_by_interval_and_posts_resource_state(
     worker_calls = []
     sleeps = []
     requests = []
-    timestamps = iter([10.0, 12.0, 13.0])
+    timestamps = iter([10.0, 12.0, 15.0])
 
     def fake_get_parameter(name, direct=False):
         if name == "INTERVAL":
@@ -45,22 +47,22 @@ def test_monitor_initializes_workers_waits_by_interval_and_posts_resource_state(
 
     monkeypatch.setattr(monitor_module.Context, "get_parameter", staticmethod(fake_get_parameter))
     monkeypatch.setattr(monitor_module.Context, "get_algorithm", staticmethod(fake_get_algorithm))
-    monkeypatch.setattr(monitor_module.NodeInfo, "get_cloud_node", staticmethod(lambda: "scheduler-node"))
-    monkeypatch.setattr(monitor_module.NodeInfo, "hostname2ip", staticmethod(lambda hostname: "10.0.0.8"))
-    monkeypatch.setattr(monitor_module.NodeInfo, "get_local_device", staticmethod(lambda: "edge-node"))
-    monkeypatch.setattr(
-        monitor_module.PortInfo,
-        "get_component_port",
-        staticmethod(lambda component: 9001),
-    )
-    monkeypatch.setattr(monitor_module.time, "time", lambda: next(timestamps))
+    context = RuntimeContext({
+        "local_node": "edge-node",
+        "cloud_node": "scheduler-node",
+        "endpoints": {"scheduler": {"fqdn": "10.0.0.8", "port": 9001}},
+    })
+    monkeypatch.setattr(monitor_module.RuntimeContext, "get_default", staticmethod(lambda: context))
+    monkeypatch.setattr(monitor_module.time, "monotonic", lambda: next(timestamps))
     monkeypatch.setattr(monitor_module.time, "sleep", lambda seconds: sleeps.append(seconds))
     monkeypatch.setattr(monitor_module.LOGGER, "info", lambda message: None)
-    monkeypatch.setattr(
-        monitor_module,
-        "http_request",
-        lambda url, method=None, **kwargs: requests.append((url, method, kwargs)),
-    )
+    def fake_http_request(url, method=None, **kwargs):
+        requests.append((url, method, kwargs))
+        if url.endswith("/runtime-directory"):
+            return {"revision": 7, "routes": []}
+        return None
+
+    monkeypatch.setattr(monitor_module, "http_request", fake_http_request)
 
     monitor = monitor_module.Monitor()
     monitor.monitor_resource()
@@ -76,11 +78,46 @@ def test_monitor_initializes_workers_waits_by_interval_and_posts_resource_state(
         ("join", "memory"),
     ]
     assert sleeps == [3.0]
+    assert monitor._next_monitor_deadline == 20.0
 
-    payload = json.loads(requests[0][2]["data"]["data"])
-    assert requests[0][0] == "http://10.0.0.8:9001/resource"
-    assert requests[0][1] == "POST"
-    assert payload == {"device": "edge-node", "resource": {"cpu": 0.4, "memory": 0.6}}
+    assert requests[0][0] == "http://10.0.0.8:9001/runtime-directory"
+    assert requests[0][1] == "GET"
+    payload = json.loads(requests[1][2]["data"]["data"])
+    assert requests[1][0] == "http://10.0.0.8:9001/resource"
+    assert requests[1][1] == "POST"
+    assert payload == {
+        "device": "edge-node",
+        "resource": {"cpu": 0.4, "memory": 0.6},
+        "runtime_directory_revision": 7,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("interval", "monitors", "message"),
+    [
+        (0, ["cpu"], "INTERVAL must be a positive number"),
+        (True, ["cpu"], "INTERVAL must be a positive number"),
+        (5, "cpu", "MONITORS must be a list"),
+        (5, ["cpu", "cpu"], "MONITORS must not contain duplicate"),
+        (5, [""], "MONITORS must be a list"),
+    ],
+)
+def test_monitor_rejects_invalid_sampling_configuration(monkeypatch, interval, monitors, message):
+    monkeypatch.setattr(
+        monitor_module.Context,
+        "get_parameter",
+        staticmethod(lambda name, direct=False: interval if name == "INTERVAL" else monitors),
+    )
+    context = RuntimeContext({
+        "local_node": "edge-node",
+        "cloud_node": "cloud-node",
+        "endpoints": {"scheduler": {"fqdn": "scheduler", "port": 9000}},
+    })
+    monkeypatch.setattr(monitor_module.RuntimeContext, "get_default", staticmethod(lambda: context))
+
+    with pytest.raises(ValueError, match=message):
+        monitor_module.Monitor()
 
 
 @pytest.mark.unit
@@ -105,3 +142,79 @@ def test_monitor_server_runs_monitor_send_wait_in_order(monkeypatch):
         server.run()
 
     assert calls == ["monitor", "send", "wait"]
+
+
+@pytest.mark.unit
+def test_monitor_reads_exact_processor_routes_once_per_interval(monkeypatch):
+    monkeypatch.setattr(
+        monitor_module.Context,
+        "get_parameter",
+        staticmethod(lambda name, direct=False: 10 if name == "INTERVAL" else []),
+    )
+    context = RuntimeContext({
+        "local_node": "edge-node",
+        "cloud_node": "cloud-node",
+        "endpoints": {"scheduler": {"fqdn": "scheduler.dayu.svc.cluster.local", "port": 9000}},
+    })
+    monkeypatch.setattr(monitor_module.RuntimeContext, "get_default", staticmethod(lambda: context))
+    monkeypatch.setattr(monitor_module.time, "time", lambda: 100.0)
+
+    requests = []
+    directory = {
+        "revision": 4,
+        "routes": [{
+            "component": "processor",
+            "logical_service": "detector",
+            "target_node": "edge-node",
+            "runtime_id": "processor-detector-edge-node-4",
+            "runtime_revision": 4,
+            "dns_name": "processor-detector.dayu.svc.cluster.local",
+            "port": 9000,
+            "runtime_service_uid": "runtime-uid",
+            "service_uid": "service-uid",
+            "pod_uid": "pod-uid",
+        }],
+    }
+    monkeypatch.setattr(
+        monitor_module,
+        "http_request",
+        lambda url, method=None, **kwargs: requests.append((url, method)) or directory,
+    )
+
+    monitor = monitor_module.Monitor()
+    first = monitor.runtime_routes(
+        component="processor", target_node="edge-node", logical_service="detector"
+    )
+    second = monitor.runtime_routes(component="processor", target_node="edge-node")
+
+    assert [route.runtime_id for route in first] == ["processor-detector-edge-node-4"]
+    assert [route.runtime_id for route in second] == ["processor-detector-edge-node-4"]
+    assert requests == [
+        ("http://scheduler.dayu.svc.cluster.local.:9000/runtime-directory", "GET")
+    ]
+
+
+@pytest.mark.unit
+def test_monitor_negative_caches_failed_directory_reads(monkeypatch):
+    monkeypatch.setattr(
+        monitor_module.Context,
+        "get_parameter",
+        staticmethod(lambda name, direct=False: 10 if name == "INTERVAL" else []),
+    )
+    context = RuntimeContext({
+        "local_node": "edge-node",
+        "endpoints": {"scheduler": {"fqdn": "scheduler.dayu.svc.cluster.local", "port": 9000}},
+    })
+    monkeypatch.setattr(monitor_module.RuntimeContext, "get_default", staticmethod(lambda: context))
+    monkeypatch.setattr(monitor_module.time, "time", lambda: 100.0)
+    requests = []
+    monkeypatch.setattr(
+        monitor_module,
+        "http_request",
+        lambda url, method=None, **kwargs: requests.append(url) or None,
+    )
+
+    monitor = monitor_module.Monitor()
+    assert monitor.runtime_routes(component="processor") == []
+    assert monitor.runtime_routes(component="processor") == []
+    assert requests == ["http://scheduler.dayu.svc.cluster.local.:9000/runtime-directory"]
