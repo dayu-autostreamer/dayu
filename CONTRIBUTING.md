@@ -1,156 +1,122 @@
-# Before you get started
+# Contributing to Dayu
 
-## Code of Conduct
+We welcome code, documentation, tests, bug reports, research validation, and user support from contributors of all
+backgrounds. Read and follow our [Code of Conduct](CODE_OF_CONDUCT.md). No project role or institutional affiliation
+is required to contribute.
 
-Please make sure to read and observe our [Code of Conduct](CODE_OF_CONDUCT.md).
+## Getting Started
 
-# Getting started
+- Fork the [Dayu repository](https://github.com/dayu-autostreamer/dayu) and branch from `main`, unless a Maintainer
+  requests another target for a backport or coordinated change.
+- Use the [documentation site](https://dayu-autostreamer.github.io/docs/) for deployment tutorials and the
+  [repository quickstart](docs/repository-quickstart.md) and [development guide](docs/development/README.md) for code
+  navigation and implementation details.
+- Start with a reproducible issue, a missing test, a documentation improvement, or an extension through an existing
+  hook or template. Comment on an issue to express interest; a Maintainer can assign it where useful. Assignment
+  commands are not required. PR review routing is described below.
 
-- Fork the [repository](https://github.com/dayu-autostreamer/dayu/) on GitHub
-- Read the [quick start](https://dayu-autostreamer.github.io/docs/) for deployment.
-- Read the [Developer Guide](https://dayu-autostreamer.github.io/docs/developer-guide/how-to-develop) for development guide.
+For questions, issue routing, or help finding reviewers, see [SUPPORT.md](SUPPORT.md). Report vulnerabilities privately
+using [SECURITY.md](SECURITY.md), rather than in a public issue or PR.
 
+## Contributor Workflow
 
-# Your First Contribution
+1. Describe the problem and intended behavior in an issue or PR. Routine contributions do not need a separate design
+   issue. Significant changes to shared contracts or sensitive behavior need the short design discussion below.
+2. Make focused commits on a topic branch and push them to your fork. Update affected implementation docs, examples,
+   templates, and tests when behavior or contracts change.
+3. Open a PR against [dayu-autostreamer/dayu](https://github.com/dayu-autostreamer/dayu), explain why the change is
+   needed, link related issues, and report the relevant validation and any checks not run.
+4. Check the review requests from [OWNERS](OWNERS), or request a responsible [Maintainer](MAINTAINERS.md#maintainers)
+   manually if automation is unavailable. Address feedback and obtain
+   renewed review after substantive changes. The merger verifies the applicable reviews and checks before merging.
 
-We will help you to contribute in different areas like filing issues, developing features, fixing critical bugs and getting your work reviewed and merged.
+### Review Requirements
 
-If you have questions about the development process, feel free to [contact us](README.md#contact).
+The [governance review policy](GOVERNANCE.md#technical-decisions-and-pull-requests) is authoritative:
 
-## Find something to work on
+- **Routine changes:** at least one independent Maintainer approval, plus relevant passing checks.
+- **Significant changes:** a short design issue and two independent technically qualified implementation reviewers,
+  including at least one Maintainer. The second reviewer may be a qualified Contributor without write access.
+  This covers significant changes to shared Task/DAG or API contracts,
+  install/cleanup behavior, compatibility, security boundaries, and release permissions.
+- **Project direction or unresolved disputes:** Maintainers escalate to the TSC. A TSC decision or approved design
+  does not replace implementation review.
 
-We are always in need of help, be it fixing documentation, reporting bugs or writing some code.
-Look at places where you feel best coding practices aren't followed, code refactoring is needed or tests are missing.
-Here is how you get started.
+Reviewers must be distinct people who did not author the change; holding two roles does not count as two approvals.
+Chair and Vice Chair offices do not add an approval stage or replace technical review. Automated labels and AI
+reviews help route work; they do not determine approval, appoint members, or authorize a merge.
+Extensions that use existing processor, hook, scheduler, or visualization interfaces normally follow routine review.
+The size of the diff alone does not determine the review path. For a significant change, describe the problem,
+proposed behavior, alternatives, compatibility or migration impact, and validation in the design issue; an
+enhancement issue can serve this purpose. Security design discussions remain private until safe to disclose.
 
-### Find a good first topic
+### OWNERS and GitHub Reviews
 
-Dayu system focused on cloud-edge collaborative stream data analysis, and is flexible to develop based on hook functions.
+Use GitHub's **Review changes → Approve / Request changes** controls. The root [OWNERS](OWNERS) lists all Maintainers
+as reviewers and approvers. GitHub Actions checks this file against the roster and generated CODEOWNERS, and requests
+an independent reviewer when needed. GitHub's native code-owner requirement and branch rules enforce the approval
+gate. `/lgtm`, `/approve`, `/hold`, and corresponding labels have no command or approval semantics in this mechanism.
 
-You can either expand the core functions of the whole system or expand the applicable research topics. 
+GitHub reads CODEOWNERS from the PR's base branch, so adding yourself in a PR does not authorize you to approve that
+PR. New reviewable changes dismiss old approvals under the branch rules; obtain renewed approval before merging.
+For a significant change, the merger also checks the design record and two distinct human GitHub Reviews, including
+one Maintainer. A green Community check validates configuration, not the number or competence of reviewers.
 
-Another good way to contribute is to find a documentation improvement, such as a missing/broken link. Please see [Contributing](#contributor-workflow) below for the workflow.
+The workflow starts after the files reach public `main`; no Prow server, custom GitHub App, or personal token is
+needed. See the [OWNERS guide](docs/development/owners.md) for configuration, limitations, and activation checks.
 
-#### Work on an issue
+## Local Validation
 
-When you are willing to take on an issue, you can assign it to yourself. Just reply with `/assign` or `/assign @yourself` on an issue,
-then the robot will assign the issue to you and your name will present at `Assignees` list.
+Choose checks that exercise the behavior you change. A prose-only change needs link, example, and consistency checks;
+it does not require installing the Python/ML or frontend toolchain. For code changes, add or update meaningful tests
+for the changed behavior and plausible regressions. Explain omitted or unavailable checks in the PR.
 
-### File an Issue
+Use Python `3.8` from [`.python-version`](.python-version) and Node.js `20` from [`.nvmrc`](.nvmrc) when working in those
+parts of the repository. Bootstrap the relevant environment with `make install-python-dev` or `make frontend-install`.
+For community-only work, a Python environment with
+`python3 -m pip install -r .github/requirements/community.txt` is sufficient; it installs only PyYAML.
 
-While we encourage everyone to contribute code, it is also appreciated when someone reports an issue.
-Issues should be filed under the [dayu repository](https://github.com/dayu-autostreamer/dayu/issues).
+| Changed area | Relevant checks |
+| --- | --- |
+| Python behavior | `make lint-python`, `make python-syntax`, and the affected tests; `make test-unit-integration` covers pure logic and API/runtime contracts. |
+| Cross-component or lifecycle behavior | `make test-component` and `make test-e2e`, in addition to affected unit/integration tests. The e2e target is a template-driven smoke suite. |
+| Build definitions, image matrix, or deployment templates | `make validate-build` and tests covering any changed configuration or lifecycle behavior. |
+| Frontend | `make frontend-check` for formatting, tests, and build; use `make frontend-lint` for incremental lint cleanup. |
+| Documentation and community files | `make validate-community`; after an approved OWNERS edit, run `make sync-codeowners` and commit the generated file too. Check commands and cross-document rules. No ML or frontend dependencies are needed. |
 
-Please follow the prompted submission guidelines while opening an issue.
+The [testing guide](docs/testing/README.md) explains the test layers and dependency setup.
+`make test-python` runs the full Python suite; `make coverage-python` also produces `coverage.xml`.
+`make ci-python` groups Python lint, syntax, and tests. `make check` combines the common build, Python, and
+frontend checks. These shortcuts do not replace additional validation needed for a particular change, and there is
+no need to run overlapping full suites repeatedly without a reason.
 
-# Contributor Workflow
+### Hosted CI
 
-Please do not ever hesitate to ask a question or send a pull request.
+[GitHub Actions](.github/workflows/ci.yml) is the primary CI entry point and uploads coverage to Codecov through OIDC.
+[CircleCI](.circleci/config.yml) reuses the repository's `make` targets. [codecov.yml](codecov.yml) configures project
+coverage comparison with the base commit and patch coverage on changed lines. `make frontend-check` is the frontend
+CI gate; the existing frontend lint backlog is handled incrementally.
 
-This is a rough outline of what a contributor's workflow looks like:
+Local check selection does not waive required hosted checks. Required reviews and status checks depend on the live
+GitHub rules as well as this policy; the [administration guide](docs/development/community-administration.md) explains
+their setup and limitations.
 
-- Create a topic branch from where to base the contribution. This is usually main.
-- Make commits of logical units.
-- Make sure commit messages are in the proper format (see below).
-- Push changes in a topic branch to a personal fork of the repository.
-- Submit a pull request to [dayu-autostreamer/dayu](https://github.com/dayu-autostreamer/dayu).
-- The PR must receive an approval from two maintainers.
+## Reviewable Changes and Commit Messages
 
-## Creating Pull Requests
+Follow the repository's formatting and lint configuration. Split unrelated work into separate PRs and explain
+compatibility impact, user-visible behavior, and validation. For a user-facing change, include a release note in the
+PR template and describe any migration action.
 
-Pull requests are often called simply "PR".
-Dayu generally follows the standard [GitHub pull request](https://help.github.com/articles/about-pull-requests/) process.
-To submit a proposed change, please develop the code/fix and add new test cases.
+A commit message should explain what changed and why. Keep the subject within 70 characters and wrap the body at
+80 characters where practical:
 
-## Running Tests Locally
+```text
+datasource: handle missing frame metadata
 
-Please align with the repository toolchain before opening a PR:
-
-- Python `3.8` from [`.python-version`](.python-version)
-- Node.js `20` from [`.nvmrc`](.nvmrc)
-
-Bootstrap the Python development environment:
-
-```bash
-python -m pip install --upgrade pip
-python -m pip install -r requirements-dev.txt
-```
-
-Or use the provided shortcut:
-
-```bash
-make install-python-dev
-```
-
-Before opening a PR, please run the Python checks locally:
-
-```bash
-make lint-python
-make python-syntax
-make test-python
-make test-unit-integration
-make test-component
-make test-e2e
-make coverage-python
-```
-
-The Python test suite is organized as a small testing pyramid:
-
-* `make test-unit-integration` validates pure logic, backend API contracts, datasource adapters, and shared runtime helpers.
-* `make test-component` exercises cross-component flows such as `generator -> scheduler -> controller -> processor -> distributor`.
-* `make test-e2e` keeps a template-driven deployment smoke test for the main Dayu orchestration path.
-* `make coverage-python` runs the full Python suite and produces the `coverage.xml` artifact uploaded by hosted CI.
-
-For frontend changes, also run the frontend checks:
-
-```bash
-make frontend-install
-make frontend-check
-make frontend-lint
-```
-
-`make ci-python` mirrors the Python CI gates, and `make check` combines the common Python and frontend verification steps for day-to-day development. `make frontend-check` is the blocking gate used by hosted CI, while `make frontend-lint` stays available for incremental cleanup of the existing frontend lint backlog.
-
-## Hosted CI Integrations
-
-This repository ships with both GitHub Actions and CircleCI definitions:
-
-* GitHub Actions remains the primary CI entry point and uploads `coverage.xml` to Codecov through OIDC.
-* CircleCI replays the same `make` targets from [`.circleci/config.yml`](./.circleci/config.yml) so hosted checks stay aligned with local development commands.
-* Codecov behavior is configured in [`codecov.yml`](./codecov.yml). The current defaults keep project coverage compared against the base commit and require patch coverage on changed lines.
-
-
-## Code Review
-
-To make it easier for your PR to receive reviews, consider the reviewers will need you to:
-
-* follow [good coding guidelines](https://pep8.org/) for code formatting.
-* write [good commit messages](https://chris.beams.io/posts/git-commit/).
-* break large changes into a logical series of smaller patches which individually make easily understandable changes, and in aggregate solve a broader issue.
-
-### Format of the commit message
-
-We follow a rough convention for commit messages that is designed to answer two questions: what changed and why.
-The subject line should feature the what and the body of the commit should describe the why.
-
-```
-scripts: add test codes for metamanager
-
-this add some unit test codes to improve code coverage for metamanager
+Explain the failure and how the change preserves the datasource contract.
 
 Fixes #12
 ```
 
-The format can be described more formally as follows:
-
-```
-<subsystem>: <what changed>
-<BLANK LINE>
-<why this change was made>
-<BLANK LINE>
-<footer>
-```
-
-The first line is the subject and should be no longer than 70 characters, the second line is always blank, and other lines should be wrapped at 80 characters. This allows the message to be easier to read on GitHub as well as in various git tools.
-
-Note: if your pull request isn't getting enough attention, you can use the reach out to get help finding reviewers.
+If review stalls, comment on the PR or use the contacts in [SUPPORT.md](SUPPORT.md). To take on ongoing review or
+maintenance responsibility, follow the [appointment process](GOVERNANCE.md#appointments-and-delegation).

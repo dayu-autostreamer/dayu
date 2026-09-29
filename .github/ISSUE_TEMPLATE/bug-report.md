@@ -1,39 +1,39 @@
 ---
 name: Bug Report
-about: Report a bug encountered while operating dayu
+about: Report a bug encountered while operating Dayu
 title: '[BUG]'
 labels: bug
 assignees: ''
-
 ---
 
-<!-- Please use this template while reporting a bug and provide as much info as possible. Thanks!-->
+<!--
+For a suspected vulnerability, use the private reporting channels in:
+https://github.com/dayu-autostreamer/dayu/blob/main/SECURITY.md
+Do not put vulnerability details or credentials in a public issue.
+Include only environment details relevant to reproducing the problem.
+-->
+
 **What happened**:
 
 **What you expected to happen**:
 
 **How to reproduce it**:
 
-**Anything else we need to know?**:
+**Relevant configuration and logs (with sensitive data removed)**:
 
 **Environment**:
-- Kubernetes version (use `kubectl version`):
-- KubeEdge version(e.g. `cloudcore --version` and `edgecore --version`):
-- Dayu version:
-- <details><summary>Cloud nodes Environment:</summary>
 
-  - Hardware configuration (e.g. `lscpu`):
-  - OS (e.g. `cat /etc/os-release`):
-  - Kernel (e.g. `uname -a`):
-  - Others:
+- Dayu version or commit:
+- Kubernetes version, if applicable:
+- KubeEdge version, if applicable:
+- Affected component, application, or scheduling policy:
 
-  </details>
-- <details><summary>Edge nodes Environment:</summary>
+<details><summary>Cloud and edge environment, if relevant</summary>
 
-  - edgecore version (e.g. `edgecore --version`):
-  - Hardware configuration (e.g. `lscpu`):
-  - OS (e.g. `cat /etc/os-release`):
-  - Kernel (e.g. `uname -a`):
-  - Others:
+- Affected node role (cloud/edge):
+- Hardware configuration:
+- OS and kernel:
+- Container runtime and relevant image tags:
+- Other relevant dependencies:
 
-  </details>
+</details>

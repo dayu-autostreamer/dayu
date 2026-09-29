@@ -45,6 +45,8 @@ define HELP_INFO
 #
 # Quality:
 #   make validate-build
+#   make validate-community
+#   make sync-codeowners
 #   make install-python-dev
 #   make lint-python
 #   make python-syntax
@@ -73,7 +75,7 @@ define HELP_INFO
 #   make frontend-format
 endef
 
-.PHONY: help build all validate-build install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python test-python-ml coverage-python coverage-python-unit-integration ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-test frontend-build frontend-check check
+.PHONY: help build all validate-build validate-community sync-codeowners install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python test-python-ml coverage-python coverage-python-unit-integration ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-test frontend-build frontend-check check
 
 help:
 	@echo "$${HELP_INFO}"
@@ -100,6 +102,12 @@ all:
 validate-build:
 	$(PYTHON) tools/validate_build_matrix.py
 
+validate-community:
+	$(PYTHON) tools/validate_community.py
+
+sync-codeowners:
+	$(PYTHON) tools/owners.py --write-codeowners
+
 install-python-dev:
 	$(PYTHON) -m pip install --upgrade pip
 	$(PYTHON) -m pip install -r requirements-dev.txt
@@ -117,6 +125,9 @@ lint-python:
 		tests \
 		dependency/core/controller \
 		tools/log_analysis.py \
+		tools/validate_community.py \
+		tools/owners.py \
+		tools/request_owner_review.py \
 		tools/validate_build_matrix.py
 
 python-syntax:
@@ -189,4 +200,4 @@ frontend-test:
 
 frontend-check: frontend-format-check frontend-test frontend-build
 
-check: validate-build ci-python frontend-check
+check: validate-build validate-community ci-python frontend-check

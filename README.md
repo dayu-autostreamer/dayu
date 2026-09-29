@@ -26,6 +26,10 @@ Dayu is a cloud-edge stream analytics platform for deploying, scheduling, and op
 pipelines across heterogeneous nodes. It combines a backend control plane, a Vue frontend, simulated datasources, and a
 runtime collaboration layer for generator, scheduler, controller, processor, distributor, and monitor services.
 
+Dayu was founded by **[Dislab](https://dislab.nju.edu.cn/)** at **[Nanjing University](https://www.nju.edu.cn/)**.
+We welcome contributions from academia, industry, and independent developers. Project responsibilities are based on
+individual contributions and follow our [open governance](GOVERNANCE.md).
+
 ## Why Dayu
 
 - DAG-based multi-stage stream analytics with dynamic task configuration and offloading
@@ -172,9 +176,9 @@ python tools/log_analysis.py --log path/to/exported-log.json.gz --slo-seconds 2.
 
 ## Contact
 
-If you have questions, feel free to reach out to us in the following ways:
+See [SUPPORT.md](SUPPORT.md) for usage questions, issue routing, private security reports, and conduct concerns.
+For general project or research contact:
 
-- [Lei Xie (lxie@nju.edu.cn)](mailto:lxie@nju.edu.cn)
 - [Wenhui Zhou (whzhou@smail.nju.edu.cn)](mailto:whzhou@smail.nju.edu.cn)
 
 ## Citation

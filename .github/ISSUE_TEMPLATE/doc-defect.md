@@ -1,12 +1,19 @@
 ---
 name: Document Defect
-about: Report a documentation defect
+about: Report a defect in Dayu repository documentation or examples
 title: '[DOC]'
 labels: documentation
 assignees: ''
-
 ---
 
-**Provide a link to that doc page:**
+<!--
+For documentation-site content, navigation, or translation, use:
+https://github.com/dayu-autostreamer/dayu-autostreamer.github.io/issues
+Repository implementation docs and examples belong here.
+-->
 
-**What is the defect and your suggestions on improvement:**
+**Link to the document and its version or commit**:
+
+**What is incorrect or missing**:
+
+**Suggested improvement**:

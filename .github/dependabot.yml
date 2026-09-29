@@ -1,0 +1,47 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: [dependencies, area/ci]
+    groups:
+      actions-compatible:
+        patterns: ['*']
+        update-types: [minor, patch]
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: [dependencies, area/frontend]
+    groups:
+      frontend-compatible:
+        patterns: ['*']
+        update-types: [minor, patch]
+      frontend-security:
+        applies-to: security-updates
+        patterns: ['*']
+  # Python/ML dependencies have runtime and GPU compatibility constraints. Start
+  # with security fixes; ordinary version migrations need a Maintainer's plan.
+  - package-ecosystem: pip
+    directories:
+      - /
+      - /backend
+      - /datasource
+      - /dependency/core/*
+      - /dependency/core/applications/*
+      - /tests
+      - /.github/requirements
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 0
+    labels: [dependencies]
+    groups:
+      python-security:
+        applies-to: security-updates
+        patterns: ['*']

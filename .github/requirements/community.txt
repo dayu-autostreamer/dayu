@@ -1,0 +1,2 @@
+# Only the YAML parser is needed for community tooling; no application imports.
+PyYAML==6.0.3

@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/dayu-autostreamer/dayu/security/advisories/new
+    about: Use a private advisory for suspected vulnerabilities; do not disclose details in public issues.
+  - name: Documentation website feedback
+    url: https://github.com/dayu-autostreamer/dayu-autostreamer.github.io/issues
+    about: Report website content, navigation, or translation issues to the website maintainers.
+  - name: Help and community contacts
+    url: https://github.com/dayu-autostreamer/dayu/blob/main/SUPPORT.md
+    about: Find usage help, contribution guidance, governance contacts, and private conduct-reporting channels.

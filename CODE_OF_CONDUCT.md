@@ -41,9 +41,28 @@ It also applies when an individual is officially representing the community in p
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at **[lxie@nju.edu.cn](mailto:lxie@nju.edu.cn)**. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported privately to
+**[Lei Xie](mailto:lxie@nju.edu.cn)** or **[Wenhui Zhou](mailto:whzhou@smail.nju.edu.cn)**.
+All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
+
+### Conflicts and Review
+
+If a report concerns one of these contacts, send it only to the other. If both are involved, contact another
+non-conflicted [Maintainer](MAINTAINERS.md#maintainers). A person involved in the complaint must not investigate,
+decide its outcome, or receive confidential case materials through their project role. The handling contact limits
+disclosure to what a fair investigation requires and protects the reporter's identity.
+
+The handling contact arranges review by at least two non-conflicted people before a lasting sanction. If the existing
+leadership cannot provide independent review, arrange suitable independent reviewers with the reporter's agreement
+before sharing confidential materials. Immediate, temporary moderation to stop ongoing harm may proceed, with the
+reason recorded and independent review within two business days. Permanent project-role removal also follows the
+[governance removal process](GOVERNANCE.md#availability-emeritus-status-and-removal).
+
+Communicate the outcome privately to the affected parties as appropriate. Either party may request reconsideration
+through a non-conflicted contact; people who made the original decision cannot be the sole reviewers of an appeal.
+Publish only a non-sensitive outcome when necessary for the community, without exposing confidential assessments.
 
 ## Enforcement Guidelines
 
