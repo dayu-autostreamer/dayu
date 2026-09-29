@@ -27,7 +27,8 @@ export default {
 <style scoped lang="scss">
 .install-page {
 	padding: 20px;
-	background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
+	background:
+		radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 24%),
 		radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.08), transparent 24%);
 }
 

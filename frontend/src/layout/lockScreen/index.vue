@@ -214,7 +214,8 @@ onUnmounted(() => {
 }
 .layout-lock-screen-img {
 	@extend .layout-lock-screen-fixed;
-	background: linear-gradient(135deg, rgba(15, 76, 203, 0.92), rgba(14, 35, 72, 0.94)),
+	background:
+		linear-gradient(135deg, rgba(15, 76, 203, 0.92), rgba(14, 35, 72, 0.94)),
 		url('../../assets/login-bg.svg') center bottom / cover no-repeat;
 	z-index: 9999991;
 }

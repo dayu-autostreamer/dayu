@@ -851,7 +851,8 @@ export default {
 	padding: 20px;
 	display: grid;
 	gap: 24px;
-	background: radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 26%),
+	background:
+		radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 26%),
 		radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 22%), #f8fafc;
 	border-radius: 24px;
 }
@@ -948,8 +949,8 @@ h3 {
 	text-align: center;
 	border: 1.5px dashed #cbd5e1;
 	border-radius: 22px;
-	background: linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 38%),
-		linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+	background:
+		linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 38%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 	padding: 32px;
 }
 
@@ -973,7 +974,10 @@ h3 {
 	border: 1px solid #cbd5e1;
 	background: #ffffff;
 	overflow: hidden;
-	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+	transition:
+		border-color 0.2s ease,
+		box-shadow 0.2s ease,
+		transform 0.2s ease;
 }
 
 .draw-container.is-drag-over {
@@ -1028,7 +1032,10 @@ h3 {
 	line-height: 1;
 	cursor: pointer;
 	box-shadow: 0 10px 22px rgba(15, 23, 42, 0.12);
-	transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+	transition:
+		border-color 0.2s ease,
+		color 0.2s ease,
+		transform 0.2s ease;
 }
 
 .minimap-toggle:hover {
@@ -1091,7 +1098,9 @@ h3 {
 	cursor: pointer;
 	font-size: 13px;
 	font-weight: 700;
-	transition: background-color 0.2s ease, transform 0.2s ease;
+	transition:
+		background-color 0.2s ease,
+		transform 0.2s ease;
 }
 
 .process-panel button:hover {
@@ -1119,7 +1128,10 @@ h3 {
 	border: 1px solid #dbe4ee;
 	border-left: 4px solid var(--service-accent);
 	cursor: grab;
-	transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+	transition:
+		transform 0.2s ease,
+		box-shadow 0.2s ease,
+		border-color 0.2s ease;
 }
 
 .service-card:hover {
@@ -1208,7 +1220,10 @@ h3 {
 	border-radius: 18px;
 	background: linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 32%), #f8fafc;
 	cursor: pointer;
-	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+	transition:
+		border-color 0.2s ease,
+		box-shadow 0.2s ease,
+		transform 0.2s ease;
 }
 
 .dag-overview-button:hover {
@@ -1321,7 +1336,9 @@ h3 {
 }
 
 .main-flow :deep(.dag-node.selected) {
-	box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22), 0 18px 34px rgba(37, 99, 235, 0.14);
+	box-shadow:
+		0 0 0 3px rgba(37, 99, 235, 0.22),
+		0 18px 34px rgba(37, 99, 235, 0.14);
 }
 
 .main-flow :deep(.vue-flow__edge-path) {

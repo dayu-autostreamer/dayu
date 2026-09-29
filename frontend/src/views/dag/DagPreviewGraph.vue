@@ -297,7 +297,8 @@ export default {
 	display: flex;
 	align-items: stretch;
 	justify-content: stretch;
-	background: linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+	background:
+		linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
 		linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px);
 	background-size: 24px 24px;
 }

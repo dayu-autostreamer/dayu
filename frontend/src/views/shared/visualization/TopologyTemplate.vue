@@ -382,10 +382,15 @@ export default {
 	min-height: 0;
 	flex: 1 1 auto;
 	border-radius: 18px;
-	background: linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+	background:
+		linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
 		linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
 		linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.92)), #ffffff;
-	background-size: 24px 24px, 24px 24px, auto, auto;
+	background-size:
+		24px 24px,
+		24px 24px,
+		auto,
+		auto;
 	overflow: hidden;
 }
 

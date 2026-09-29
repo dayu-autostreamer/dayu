@@ -248,7 +248,7 @@ export default {
 									backgroundColor: 'rgba(148, 163, 184, 0.12)',
 									fillerColor: 'rgba(37, 99, 235, 0.18)',
 								},
-						  ]
+							]
 						: [],
 				series,
 			};
