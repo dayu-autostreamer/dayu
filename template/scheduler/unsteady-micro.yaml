@@ -18,7 +18,7 @@ pod-template:
     - name: SCH_REDEPLOYMENT_POLICY_NAME
       value: non
     - name: SCH_AGENT_NAME
-      value: steady
+      value: unsteady
     - name: SCH_AGENT_PARAMETERS
       value: >
         {
@@ -27,11 +27,10 @@ pod-template:
               'if_stop_record_in_single_cycle':1,
               'stop_max_frame_num':1000,
           },
-          'steady_param':{
+          'unsteady_param':{
+              'schedule_type':'micro',
 
               'kb_path':'test_kb/kb2',
-              'steady_record_path':'records/scheduling',
-              'correct_record_path':'records/prediction',
               'delay_cons':0.3,
               'acc_cons':0.6,
               'delay_weight':0.8,
@@ -47,10 +46,14 @@ pod-template:
               'history_length':3,
               'stop_threshold':0.1,
               'cluster_threshold':0.5,
-              'if_online_train':True,
+              'if_online_train':False,
               'macro_update_interval':0.01,
               'context_analyze_type':1,
 
+              'feedback_weight':{
+                  'delay_decrease_weight':{'fps':-0.7071067811865475, 'resolution':-0.7071067811865475, 'buffer_size':0, 'edge_serv_num':0},
+                  'acc_increase_weight':{'fps':0.7071067811865475, 'resolution':0.7071067811865475, 'buffer_size':0, 'edge_serv_num':0}
+              },
               'coeff_info':{
                               'step_coeff':{
                                   'start_value':10,

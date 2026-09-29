@@ -1,49 +1,17 @@
 from core.lib.content import Task
 
-resolution_wh = {
-    "240p": {
-        "w": 320,
-        "h": 240
-    },
-    "360p": {
-        "w": 640,
-        "h": 360
-    },
-    "480p": {
-        "w": 640,
-        "h": 480
-    },
-    "540p": {
-        "w": 960,
-        "h": 540
-    },
-    "720p": {
-        "w": 1280,
-        "h": 900
-    },
-    "900p": {
-        "w": 1440,
-        "h": 900
-    },
-    "1080p": {
-        "w": 1920,
-        "h": 1080
-    }
-}
+from .accuracy_prediction import resolution_wh
 
 
-class AccuracyCalculation():
-
-    def __init__(self):
-
-        pass
-
+class AccuracyCalculation:
     @classmethod
     def get_real_acc(self, det_task: Task, gt_task: Task):
 
         det_per_frame_bbox_list = self.get_bbox_list_from_task(det_task)
         gt_per_frame_bbox_list = self.get_bbox_list_from_task(gt_task)
 
+        if not det_per_frame_bbox_list or not gt_per_frame_bbox_list:
+            return None
         det_boxes = det_per_frame_bbox_list[-1]
         gt_boxes = gt_per_frame_bbox_list[0]
 
@@ -54,19 +22,20 @@ class AccuracyCalculation():
         elif len(gt_boxes) == 0 and len(det_boxes) > 0:
             return 0
 
-        det_reso = det_task.get_metadata()['resolution']
-        gt_reso = gt_task.get_metadata()['resolution']
+        det_reso = det_task.get_metadata()["resolution"]
+        gt_reso = gt_task.get_metadata()["resolution"]
 
-        acc_info = self.calculate_accuracy(gt_boxes=gt_boxes,
-                                           det_boxes=det_boxes,
-                                           gt_width=resolution_wh[gt_reso]['w'],
-                                           gt_height=resolution_wh[gt_reso]['h'],
-                                           det_width=resolution_wh[det_reso]['w'],
-                                           det_height=resolution_wh[det_reso]['h'],
-                                           iou_threshold=0.5
-                                           )
+        acc_info = self.calculate_accuracy(
+            gt_boxes=gt_boxes,
+            det_boxes=det_boxes,
+            gt_width=resolution_wh[gt_reso]["w"],
+            gt_height=resolution_wh[gt_reso]["h"],
+            det_width=resolution_wh[det_reso]["w"],
+            det_height=resolution_wh[det_reso]["h"],
+            iou_threshold=0.5,
+        )
 
-        return acc_info['Recall']
+        return acc_info["Recall"]
 
     @classmethod
     def get_bbox_list_from_task(self, task: Task):
@@ -75,17 +44,19 @@ class AccuracyCalculation():
         task_content = task.get_first_content()
         if not isinstance(task_content, dict):
             return bbox_list
-        outputs = task_content.get('outputs')
+        outputs = task_content.get("outputs")
         if not isinstance(outputs, dict):
             return bbox_list
-        for record in outputs.get('bbox', []) or []:
+        for record in outputs.get("bbox", []) or []:
             if not isinstance(record, dict):
                 continue
-            bbox_list.append([
-                item.get('bbox')
-                for item in record.get('items') or []
-                if isinstance(item, dict) and len(item.get('bbox') or []) == 4
-            ])
+            bbox_list.append(
+                [
+                    item.get("bbox")
+                    for item in record.get("items") or []
+                    if isinstance(item, dict) and len(item.get("bbox") or []) == 4
+                ]
+            )
         return bbox_list
 
     @classmethod
@@ -114,9 +85,7 @@ class AccuracyCalculation():
         gt_matched = [False] * len(gt_boxes)
 
         for det_box in det_boxes:
-            det_box_mapped = self.map_bbox_to_resolution(
-                det_box, det_width, det_height, gt_width, gt_height
-            )
+            det_box_mapped = self.map_bbox_to_resolution(det_box, det_width, det_height, gt_width, gt_height)
 
             max_iou = 0.0
             best_gt_idx = -1
@@ -139,11 +108,11 @@ class AccuracyCalculation():
         fn = sum([not matched for matched in gt_matched])
 
         return {
-            'TP': tp,
-            'FP': fp,
-            'FN': fn,
-            'Precision': tp / (tp + fp) if (tp + fp) > 0 else 0,
-            'Recall': tp / (tp + fn) if (tp + fn) > 0 else 0
+            "TP": tp,
+            "FP": fp,
+            "FN": fn,
+            "Precision": tp / (tp + fp) if (tp + fp) > 0 else 0,
+            "Recall": tp / (tp + fn) if (tp + fn) > 0 else 0,
         }
 
     @classmethod
@@ -194,5 +163,5 @@ class AccuracyCalculation():
 
         union_area = box1_area + box2_area - intersection_area
 
-        iou = intersection_area / union_area
+        iou = intersection_area / union_area if union_area > 0 else 0.0
         return iou

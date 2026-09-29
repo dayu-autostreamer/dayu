@@ -63,6 +63,7 @@ that appear in templates, environment variables, and visualization configs.
 | `casva`     | `dependency/core/lib/algorithms/before_submit_task_operation/casva_operation.py`     | Record file size and estimate content dynamics relative to the previous config.   | Used by CASVA reward and scenario logic.              |
 | `chameleon` | `dependency/core/lib/algorithms/before_submit_task_operation/chameleon_operation.py` | Cache the first encoded frame and first hash code for the next scheduler request. | Enables Chameleon profiling.                          |
 | `steady`    | `dependency/core/lib/algorithms/before_submit_task_operation/steady_operation.py`    | Record file size and keep the task shape expected by Steady-family baselines.     | Used by steady-style policy templates.                 |
+| `unsteady` | `dependency/core/lib/algorithms/schedule_agent/unsteady_agent/hook.py` | Macro-only or micro-only ablation of STEADY, sharing its models and runtime adapter. | Installable as `unsteady-macro` or `unsteady-micro`; see [STEADY configuration](steady.md). |
 
 ### `GEN_GETTER`
 

@@ -18,7 +18,7 @@ pod-template:
     - name: SCH_REDEPLOYMENT_POLICY_NAME
       value: non
     - name: SCH_AGENT_NAME
-      value: steady
+      value: unsteady
     - name: SCH_AGENT_PARAMETERS
       value: >
         {
@@ -27,11 +27,10 @@ pod-template:
               'if_stop_record_in_single_cycle':1,
               'stop_max_frame_num':1000,
           },
-          'steady_param':{
+          'unsteady_param':{
+              'schedule_type':'macro',
 
               'kb_path':'test_kb/kb2',
-              'steady_record_path':'records/scheduling',
-              'correct_record_path':'records/prediction',
               'delay_cons':0.3,
               'acc_cons':0.6,
               'delay_weight':0.8,

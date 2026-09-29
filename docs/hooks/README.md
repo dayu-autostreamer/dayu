@@ -244,7 +244,8 @@ Before finishing, compare registered aliases against the catalog. A quick local 
 
 - `dependency/core/lib/algorithms/__init__.py` skips optional algorithm packages when a dependency is missing. A hook can exist in the repository but still be unavailable at runtime if its optional dependency is not installed.
 - Some hooks are research-oriented and rely on offline assets or model files under mounted volumes.
-- `obj_velocity` is registered as a scenario extractor alias but its implementation is currently a placeholder.
+- `obj_velocity` estimates motion with optical flow from the task file in the processor temporary volume. Enable it
+  alongside `obj_num` and `obj_size` on the detector when using [STEADY and its ablations](steady.md).
 - A scheduler hook can exist without being exposed as an installable policy in `template/scheduler_policies.yaml`. Treat
   the policy catalog as the install-time source of truth.
 

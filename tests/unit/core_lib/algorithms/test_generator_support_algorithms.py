@@ -346,7 +346,7 @@ def test_before_submit_task_operations_track_file_metadata_and_last_frame_state(
 
 
 @pytest.mark.unit
-def test_getter_filters_scenario_extractors_and_task_queues_cover_runtime_contracts(monkeypatch):
+def test_getter_filters_scenario_extractors_and_task_queues_cover_runtime_contracts(monkeypatch, mounted_runtime):
     time_values = iter([10.0, 20.0, 22.0])
     monkeypatch.setattr(data_getter_filter_casva_module, "time", SimpleNamespace(time=lambda: next(time_values)))
 
@@ -403,7 +403,11 @@ def test_getter_filters_scenario_extractors_and_task_queues_cover_runtime_contra
     obj_size = scenario_extraction_module.ObjectSizeExtraction()(results, task)
     assert obj_size[0] > 0
     assert obj_size[1] == 0
-    assert scenario_extraction_module.ObjectVelocityExtraction()(results, task) == 0
+    velocity = scenario_extraction_module.ObjectVelocityExtraction()
+    try:
+        assert velocity(results, task) == 0
+    finally:
+        velocity.stop()
 
     simple_queue = task_queue_module.SimpleQueue()
     assert simple_queue.get() is None
