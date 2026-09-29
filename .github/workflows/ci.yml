@@ -168,7 +168,7 @@ jobs:
         run: make coverage-python PYTEST_ARGS=--require-ml-dependencies
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.xml
           flags: full-suite
