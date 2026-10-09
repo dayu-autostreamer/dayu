@@ -383,22 +383,27 @@ class ComponentRouter:
 
     def wait_for_result_size(self, expected, timeout=2.0):
         deadline = time.monotonic() + timeout
+        poll_wait = threading.Event()
         response = None
         while time.monotonic() < deadline:
             response = self.distributor_client.get("/all_result")
             if response.status_code == 200 and response.json()["size"] == expected:
                 return response
-            time.sleep(0.01)
+            poll_wait.wait(0.01)
         return response
 
     def wait_for_lease_operation_count(self, expected, timeout=2.0):
         deadline = time.monotonic() + timeout
+        poll_wait = threading.Event()
         while time.monotonic() < deadline:
-            operations = self.scheduler_server.scheduler.lease_operations
+            operations = list(self.scheduler_server.scheduler.lease_operations)
             if len(operations) >= expected:
                 return operations
-            time.sleep(0.01)
-        return self.scheduler_server.scheduler.lease_operations
+            poll_wait.wait(0.01)
+        pytest.fail(
+            f"Timed out waiting for {expected} lease operations; "
+            f"observed {self.scheduler_server.scheduler.lease_operations!r}"
+        )
 
 
 @pytest.mark.component
@@ -763,22 +768,37 @@ def test_stream_data_flows_from_datasource_to_processing_and_storage(mounted_run
         assert all(request["gen_compress_name"] == "simple" for request in source_server.source_requests)
 
         assert len(scheduler_server.scheduler.schedule_calls) == 2
-        assert len(scheduler_server.scheduler.scenario_tasks) == 3
-        assert scheduler_server.scheduler.scenario_tasks[-1].get_scenario_data("face-detection") == {
-            "obj_num": 1,
-            "payload": "stream-batch-2",
-        }
-        router.wait_for_lease_operation_count(3 * len(stored_tasks))
+        # Each task's release follows its scenario request. Validate all root
+        # lifecycles before inspecting feedback; persistence alone is earlier.
+        lease_operations = router.wait_for_lease_operation_count(3 * len(stored_tasks))
+        assert len({task.get_root_uuid() for task in stored_tasks}) == len(stored_tasks)
         operations_by_root = {
             task.get_root_uuid(): [] for task in stored_tasks
         }
-        for operation, revision, root_uuid in scheduler_server.scheduler.lease_operations:
+        for operation, revision, root_uuid in lease_operations:
             assert revision == 1
             operations_by_root[root_uuid].append(operation)
         assert operations_by_root == {
             task.get_root_uuid(): ["acquire", "renew", "release"]
             for task in stored_tasks
         }
+        # Feedback may arrive in any order. Compare complete records without
+        # deduplicating, so missing, duplicate, or mismatched tasks still fail.
+        scenario_tasks = sorted(
+            list(scheduler_server.scheduler.scenario_tasks),
+            key=lambda task: (task.get_source_id(), task.get_task_id(), task.get_root_uuid()),
+        )
+        assert len(scenario_tasks) == len(stored_tasks)
+        assert [
+            (
+                task.get_source_id(), task.get_task_id(), task.get_root_uuid(),
+                task.get_scenario_data("face-detection"),
+            )
+            for task in scenario_tasks
+        ] == [
+            (0, task_id, task.get_root_uuid(), {"obj_num": 1, "payload": f"stream-batch-{task_id}"})
+            for task_id, task in enumerate(stored_tasks)
+        ]
     finally:
         router.close()
 
