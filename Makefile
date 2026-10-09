@@ -12,6 +12,9 @@ FRONTEND_DIR ?= frontend
 PYTHONPATH_VALUE := $(CURDIR)/backend:$(CURDIR)/dependency:$(CURDIR)/datasource
 PYTHONPYCACHEPREFIX ?= $(CURDIR)/.cache/pycache
 PYTEST_ARGS ?=
+FUZZ_TARGET ?= all
+FUZZ_SECONDS ?= 600
+FUZZ_INPUT ?=
 COVERAGE_XML ?= coverage.xml
 PYTHON_COVERAGE_PATHS := \
 	--cov=backend \
@@ -58,6 +61,9 @@ define HELP_INFO
 #   make coverage-python
 #   make coverage-python-unit-integration
 #   make ci-python
+#   make fuzz-smoke
+#   make fuzz FUZZ_TARGET=dag FUZZ_SECONDS=600
+#   make fuzz-replay FUZZ_TARGET=dag FUZZ_INPUT=/path/to/crash
 #   make frontend-install
 #   make frontend-lint
 #   make frontend-format
@@ -76,6 +82,7 @@ define HELP_INFO
 endef
 
 .PHONY: help build all validate-build validate-community sync-codeowners install-python-dev lint-python python-syntax test-unit-integration test-component test-e2e test-python test-python-ml coverage-python coverage-python-unit-integration ci-python frontend-install frontend-lint frontend-format frontend-format-check frontend-test frontend-build frontend-check check
+.PHONY: fuzz-smoke fuzz fuzz-replay
 
 help:
 	@echo "$${HELP_INFO}"
@@ -128,6 +135,7 @@ lint-python:
 		tools/validate_community.py \
 		tools/owners.py \
 		tools/request_owner_review.py \
+		tools/run_fuzz.py \
 		tools/validate_build_matrix.py
 
 python-syntax:
@@ -179,6 +187,15 @@ coverage-python-unit-integration:
 		--cov-report=xml:$(COVERAGE_XML)
 
 ci-python: lint-python python-syntax test-python
+
+fuzz-smoke:
+	$(PYTHON) tools/run_fuzz.py --target "$(FUZZ_TARGET)" --seconds 60
+
+fuzz:
+	$(PYTHON) tools/run_fuzz.py --target "$(FUZZ_TARGET)" --seconds "$(FUZZ_SECONDS)"
+
+fuzz-replay:
+	$(PYTHON) tools/run_fuzz.py --target "$(FUZZ_TARGET)" --replay "$(FUZZ_INPUT)"
 
 frontend-install:
 	cd $(FRONTEND_DIR) && $(NPM) install --legacy-peer-deps --no-audit --no-fund --no-package-lock

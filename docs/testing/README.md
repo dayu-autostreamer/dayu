@@ -25,6 +25,11 @@ The repository already follows a sensible layered layout that is close to mature
 | Integration | API contracts and module-boundary tests with mocked external systems | `tests/integration/` | `python-tests`, `python-coverage` |
 | Component | In-process collaboration across multiple services | `tests/component/` | `python-component-tests` |
 | E2E smoke | Template rendering, config catalog, and top-level smoke checks | `tests/e2e/` | `python-e2e-smoke` |
+| Contract fuzzing | Coverage-guided DAG, scheduling-plan and exact-route invariants | `tests/fuzz/` | `Fuzz` |
+
+The [fuzzing guide](../../tests/fuzz/README.md) documents the isolated Atheris environment,
+seed corpus, bounded local/CI runs, and failure reproduction. Its deterministic recipes also
+run under ordinary pytest, without adding Atheris to the general development dependencies.
 
 This is the right base framework, so the recommended change is not to introduce a new top-level testing style. The better move is to make the existing pyramid more systematic around hooks.
 
