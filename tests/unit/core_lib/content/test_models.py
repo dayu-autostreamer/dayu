@@ -22,6 +22,19 @@ def service_entry(name, *, execute_device="", next_nodes=None, prev_nodes=None):
     }
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("boundary, getter", [("_start", "get_start_node"), ("_end", "get_end_node")])
+def test_missing_boundary_with_dangling_edge_reports_value_error(boundary, getter):
+    # Rendering the whole malformed DAG in an error message used to raise
+    # KeyError while following this dangling edge, masking the intended error.
+    other = "_end" if boundary == "_start" else "_start"
+    dag = DAG.from_dict({"worker": service_entry("worker", next_nodes=[boundary]), other: service_entry(other)})
+    with pytest.raises(ValueError, match="does not exist in DAG"):
+        getattr(dag, getter)()
+    with pytest.raises(ValueError, match="does not exist in DAG"):
+        dag.validate_dag()
+
+
 def build_branching_task():
     dag = Task.extract_dag_from_dict(
         {

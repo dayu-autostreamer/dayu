@@ -151,12 +151,12 @@ class DAG:
 
     def get_start_node(self):
         if TaskConstant.START.value not in self.nodes:
-            raise ValueError(f'Start node "{self}" does not exist in DAG')
+            raise ValueError(f'Start node "{TaskConstant.START.value}" does not exist in DAG')
         return self.nodes[TaskConstant.START.value]
 
     def get_end_node(self):
         if TaskConstant.END.value not in self.nodes:
-            raise ValueError(f'End node "{self}" does not exist in DAG')
+            raise ValueError(f'End node "{TaskConstant.END.value}" does not exist in DAG')
         return self.nodes[TaskConstant.END.value]
 
     def check_is_pipeline(self):
@@ -197,9 +197,9 @@ class DAG:
 
     def _check_start_end_node(self):
         if TaskConstant.START.value not in self.nodes:
-            raise ValueError(f'Start node "{self}" does not exist in DAG')
+            raise ValueError(f'Start node "{TaskConstant.START.value}" does not exist in DAG')
         if TaskConstant.END.value not in self.nodes:
-            raise ValueError(f'End node "{self}" does not exist in DAG')
+            raise ValueError(f'End node "{TaskConstant.END.value}" does not exist in DAG')
 
     def _check_duplicate_edges(self):
         """check if dag has duplicate edges"""

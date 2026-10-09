@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 
 import pytest
 
@@ -23,6 +24,18 @@ def canonical_route(component="processor", node="edge-a", service="detector"):
             "pod_uid": "pod-uid",
         },
     }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field, value", [("protocol", "https"), ("base_path", "/different")])
+def test_runtime_resolver_rejects_same_identity_with_conflicting_address(field, value):
+    first = canonical_route()
+    second = deepcopy(first)
+    second["endpoint"][field] = value
+    resolver = RuntimeResolver(RuntimeContext({"local_node": "edge-a"}))
+    for routes in ([first, second], [second, first]):
+        with pytest.raises(ValueError, match="ambiguous task runtime route"):
+            resolver.resolve("processor", task=routes, target_node="edge-a", logical_service="detector")
 
 
 @pytest.mark.unit

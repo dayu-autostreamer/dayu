@@ -1,0 +1,11 @@
+# Isolated CPU-only fuzz environment. Python 3.8 is the CI baseline.
+# Atheris 2.3.0 provides the CPython 3.8 Linux wheel; newer releases do not.
+atheris==2.3.0
+colorlog==6.9.0
+PyYAML==6.0.3
+requests==2.32.4
+# Pin transitive dependencies to versions compatible with Python 3.8.
+certifi==2026.7.22
+charset-normalizer==3.5.2
+idna==3.15
+urllib3==2.2.3

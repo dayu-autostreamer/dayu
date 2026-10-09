@@ -43,7 +43,7 @@ class RuntimeResolver:
             # conflicting answers are not.
             identities = {
                 (item.runtime_id, item.runtime_service_uid, item.service_uid, item.endpoint_pod_uid,
-                 item.fqdn, item.port, item.deployment_revision)
+                 item.fqdn, item.port, item.protocol, item.base_path, item.deployment_revision)
                 for item in matches
             }
             if len(identities) == 1:
