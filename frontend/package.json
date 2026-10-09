@@ -37,7 +37,7 @@
 		"vue-router": "^4.1.6"
 	},
 	"devDependencies": {
-		"@types/node": "^18.19.75",
+		"@types/node": "^26.6.4",
 		"@types/nprogress": "^0.2.0",
 		"@types/sortablejs": "^1.15.1",
 		"@typescript-eslint/eslint-plugin": "^5.58.0",
