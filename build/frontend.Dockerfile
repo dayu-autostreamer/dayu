@@ -1,5 +1,5 @@
 ARG REG=docker.io
-FROM ${REG}/node:20
+FROM ${REG}/node:22.23.3
 
 LABEL authors="Skyrim"
 

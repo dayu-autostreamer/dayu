@@ -62,7 +62,7 @@
 		"not dead"
 	],
 	"engines": {
-		"node": ">=20.0.0",
+		"node": ">=22.13.0",
 		"npm": ">= 7.0.0"
 	},
 	"keywords": [
