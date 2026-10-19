@@ -212,12 +212,12 @@ jobs:
       RELEASE_SHA: ${{ needs.release-gate.outputs.target_sha }}
     steps:
       - name: Check out the released commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_SHA }}
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
