@@ -119,7 +119,7 @@ compatibility matrix when installing or upgrading a deployment:
 To align local testing with CI, use the repository-declared toolchain:
 
 - Python `3.8` via [`.python-version`](.python-version)
-- Node.js `20` via [`.nvmrc`](.nvmrc)
+- Node.js `22.23.3` via [`.nvmrc`](.nvmrc) (minimum supported version: `22.13.0`)
 - `make` as the primary local task entry point
 
 Python developer dependencies are collected in [`requirements-dev.txt`](requirements-dev.txt), and Python lint

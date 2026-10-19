@@ -157,7 +157,7 @@ The repository already has a good baseline for local verification.
 ### Toolchain
 
 - Python `3.8` via [`.python-version`](../../.python-version)
-- Node.js `20` via [`.nvmrc`](../../.nvmrc)
+- Node.js `22.23.3` via [`.nvmrc`](../../.nvmrc) (minimum supported version: `22.13.0`)
 - Python lint configuration in [`pyproject.toml`](../../pyproject.toml)
 - Make-based task entrypoints in [`Makefile`](../../Makefile)
 

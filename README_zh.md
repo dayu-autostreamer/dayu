@@ -105,7 +105,7 @@ Dayu 使用两个文档入口：
 为保证本地测试环境与 CI 一致，建议使用仓库中声明的工具链版本：
 
 - Python `3.8`，见 [`.python-version`](.python-version)
-- Node.js `20`，见 [`.nvmrc`](.nvmrc)
+- Node.js `22.23.3`，见 [`.nvmrc`](.nvmrc)（最低支持版本：`22.13.0`）
 - 使用 `make` 作为本地开发任务入口
 
 Python 侧开发依赖汇总在 [`requirements-dev.txt`](requirements-dev.txt)，Python lint 配置统一放在 [
