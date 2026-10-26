@@ -18,6 +18,11 @@ updates:
       day: monday
     open-pull-requests-limit: 3
     labels: [dependencies, area/frontend]
+    # Frontend tests and ESLint depend on the pre-7 compiler API.
+    # Remove this restriction after the toolchain migration.
+    ignore:
+      - dependency-name: typescript
+        versions: ['>=7.0.0']
     groups:
       frontend-compatible:
         patterns: ['*']
